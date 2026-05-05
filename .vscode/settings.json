@@ -1,0 +1,17 @@
+{
+    "C_Cpp.default.configurationProvider": "platformio.platformio-ide",
+    "C_Cpp.default.cppStandard": "c++17",
+    "C_Cpp.default.cStandard": "c11",
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/include",
+        "${workspaceFolder}/src"
+    ],
+    "files.associations": {
+        "*.ino": "cpp",
+        "*.pde": "cpp"
+    },
+    "platformio-ide.disablePIOHomeStartup": true,
+    "platformio-ide.customPATH": "",
+    "platformio-ide.useBuiltinPIOCore": true,
+    "platformio-ide.useDevelopmentPIOCore": false
+}

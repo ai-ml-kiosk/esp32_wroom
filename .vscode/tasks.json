@@ -1,0 +1,47 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "PlatformIO",
+            "task": "Build",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$platformio"
+            ],
+            "label": "PlatformIO: Build"
+        },
+        {
+            "type": "PlatformIO",
+            "task": "Upload",
+            "group": "build",
+            "problemMatcher": [],
+            "label": "PlatformIO: Upload"
+        },
+        {
+            "type": "PlatformIO",
+            "task": "Clean",
+            "group": "build",
+            "problemMatcher": [],
+            "label": "PlatformIO: Clean"
+        },
+        {
+            "type": "PlatformIO",
+            "task": "Upload and Monitor",
+            "group": "build",
+            "problemMatcher": [],
+            "label": "PlatformIO: Upload and Monitor"
+        },
+        {
+            "type": "PlatformIO",
+            "task": "Monitor",
+            "group": "build",
+            "problemMatcher": [],
+            "label": "PlatformIO: Monitor"
+        }
+    ]
+}
