@@ -28,6 +28,7 @@ Professional ESP32 starter project using the Arduino framework and a modular C++
 - `include/generated/*.h`: locally generated embedded certificate/key headers
 - `include/Application.h`: setup and loop orchestration
 - `certs/`: local self-signed certificate and key
+- `docs/`: reference screenshots for the browser UI
 - `.env.example`: sample local environment-variable file for Wi-Fi secrets
 - `scripts/load_build_secrets.py`: loads selected PlatformIO build settings from shell environment variables
 - `scripts/generate_self_signed_cert.sh`: regenerates the local TLS assets
@@ -89,6 +90,22 @@ Choose a fixed IP that is free on your LAN or reserved for the ESP32 in your rou
 - `/`: live board status dashboard over HTTPS
 - `/api/status`: machine-readable JSON status
 - `/healthz`: simple text health check
+
+## Browser UI Preview
+
+These screenshots were captured from a live ESP32 board responding at the fixed IP `192.168.1.176`. Your SSID, IP address, uptime, and signal values will vary.
+
+### HTTPS dashboard
+
+Main live status page served over HTTPS:
+
+![HTTPS dashboard preview](docs/https-dashboard.png)
+
+### HTTP setup page
+
+Bootstrap page served on port `80` to help users reach the HTTPS dashboard and download the certificate:
+
+![HTTP setup page preview](docs/http-bootstrap.png)
 
 The firmware serves on port `443` with a project-local self-signed certificate. Browsers will warn until you trust `certs/status-server-cert.pem`.
 
