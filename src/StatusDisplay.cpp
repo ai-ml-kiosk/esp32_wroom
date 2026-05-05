@@ -6,6 +6,7 @@
 #include "AppConfig.h"
 #include "Connectivity.h"
 #include "Heartbeat.h"
+#include "RegionalSettings.h"
 #include "StatusDisplay.h"
 
 namespace {
@@ -32,8 +33,10 @@ constexpr uint8_t kHeaderWifiColumn = 0;
 constexpr uint8_t kHeaderDateColumn = 3;
 constexpr uint8_t kHeaderBatteryColumn = 14;
 constexpr uint8_t kTimeRow = 2;
-constexpr uint8_t kAddressRow = 5;
-constexpr time_t kMinimumValidEpoch = 946684800;
+constexpr uint8_t kUptimeRow = 4;
+constexpr uint8_t kIdentityRow = 5;
+constexpr uint8_t kAddressRow = 6;
+constexpr uint8_t kSignalRow = 7;
 constexpr unsigned long kSignalRefreshMs = 5000;
 constexpr unsigned long kAddressScrollRefreshMs = 350;
 constexpr uint8_t kAddressScrollGapColumns = 3;
@@ -189,9 +192,7 @@ void drawHeaderRow() {
 }
 
 bool hasValidClock() {
-  time_t now;
-  time(&now);
-  return now >= kMinimumValidEpoch;
+  return hasSynchronizedClock();
 }
 
 void maybeStartClockSync() {
@@ -205,49 +206,72 @@ void maybeStartClockSync() {
     return;
   }
 
-  configTzTime(AppConfig::kTimeZone, AppConfig::kNtpServerPrimary,
+  const String timeZonePosix = getConfiguredTimeZonePosix();
+  configTzTime(timeZonePosix.c_str(), AppConfig::kNtpServerPrimary,
                AppConfig::kNtpServerSecondary, AppConfig::kNtpServerTertiary);
   lastClockSyncAttemptMs = nowMs;
   Serial.printf("Starting NTP time sync using timezone %s.\n",
-                AppConfig::kTimeZone);
-}
-
-bool getCurrentTimeInfo(struct tm *timeInfo) {
-  if (!hasValidClock()) {
-    return false;
-  }
-
-  return getLocalTime(timeInfo, 0);
+                timeZonePosix.c_str());
 }
 
 String getTimeLine() {
-  struct tm timeInfo;
-  if (!getCurrentTimeInfo(&timeInfo)) {
-    return "--:--";
-  }
-
-  char buffer[16];
-  strftime(buffer, sizeof(buffer), "%H:%M", &timeInfo);
-  return String(buffer);
+  return getFormattedCurrentTime();
 }
 
 String getDateLine() {
-  struct tm timeInfo;
-  if (!getCurrentTimeInfo(&timeInfo)) {
-    return "-- --- ----";
+  return getFormattedCurrentDate();
+}
+
+String getTimeZoneLine() {
+  String timeZone = getCurrentTimeZoneAbbreviation();
+  if (timeZone.length() > 6) {
+    timeZone = timeZone.substring(0, 6);
   }
 
-  char buffer[16];
-  strftime(buffer, sizeof(buffer), "%d %b %Y", &timeInfo);
-  String dateLine(buffer);
-  dateLine.toUpperCase();
-  return dateLine;
+  return timeZone;
+}
+
+void drawTimeBlock() {
+  const String timeLine = getTimeLine();
+  const String timeZoneLine = getTimeZoneLine();
+  const String cacheKey = timeLine + "|" + timeZoneLine;
+  if (displayCacheValid && cachedDoubleHeightRow == kTimeRow &&
+      cachedDoubleHeightText == cacheKey) {
+    return;
+  }
+
+  display.clearLine(kTimeRow);
+  display.clearLine(kTimeRow + 1);
+  display.draw2x2String(0, kTimeRow, timeLine.c_str());
+  if (!timeZoneLine.isEmpty()) {
+    const uint8_t timeZoneColumn =
+        timeZoneLine.length() < kMaxColumns
+            ? kMaxColumns - timeZoneLine.length()
+            : 0;
+    display.drawString(timeZoneColumn, kTimeRow, timeZoneLine.c_str());
+  }
+
+  cachedDoubleHeightRow = kTimeRow;
+  cachedDoubleHeightText = cacheKey;
+}
+
+String getUptimeLine() {
+  const unsigned long uptimeSeconds = millis() / 1000;
+  const unsigned long days = uptimeSeconds / 86400;
+  const unsigned long hours = (uptimeSeconds % 86400) / 3600;
+  const unsigned long minutes = (uptimeSeconds % 3600) / 60;
+  const unsigned long seconds = uptimeSeconds % 60;
+
+  char buffer[20];
+  snprintf(buffer, sizeof(buffer), "UP %lud %02lu:%02lu:%02lu", days, hours,
+           minutes, seconds);
+  return String(buffer);
 }
 
 void drawCommonTopRows() {
   drawHeaderRow();
   drawLine(1, "");
-  drawDoubleHeightCenteredLine(kTimeRow, getTimeLine());
+  drawTimeBlock();
 }
 
 bool respondsToI2cAddress(const uint8_t address) {
@@ -313,10 +337,6 @@ void drawAddressLine(const uint8_t row, const String &text,
   drawRawLine(row, getScrollingWindow(text, kMaxColumns, nowMs));
 }
 
-String getAssignmentLine() {
-  return "Addr: " + getIpAssignmentMode();
-}
-
 String getSignalLine() {
   const unsigned long nowMs = millis();
   if (isStationConnected()) {
@@ -342,19 +362,19 @@ String getSignalLine() {
 void drawBootScreen() {
   display.clearDisplay();
   drawCommonTopRows();
-  drawLine(4, "BOOTING");
+  drawLine(kUptimeRow, "UP 0d 00:00:00");
+  drawLine(kIdentityRow, "BOOTING");
   drawRawLine(kAddressRow, "Init display...");
-  drawLine(6, "WiFi starting");
-  drawLine(7, "");
+  drawLine(kSignalRow, "WiFi starting");
   displayCacheValid = true;
 }
 
 void drawStatusPage(const unsigned long nowMs) {
   drawCommonTopRows();
-  drawLine(4, getIdentityLine());
+  drawLine(kUptimeRow, getUptimeLine());
+  drawLine(kIdentityRow, getIdentityLine());
   drawAddressLine(kAddressRow, getAddressLine(), nowMs);
-  drawLine(6, getAssignmentLine());
-  drawLine(7, getSignalLine());
+  drawLine(kSignalRow, getSignalLine());
 }
 
 void refreshStatusDisplay(const unsigned long nowMs) {

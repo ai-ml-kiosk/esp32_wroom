@@ -7,3 +7,5 @@
 !.env.example
 certs/*.pem
 include/generated/*.h
+id_ed25519_ai_agent
+id_ed25519_ai_agent.pub

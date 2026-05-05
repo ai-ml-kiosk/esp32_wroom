@@ -42,7 +42,6 @@ fi
 
 cat > "${TMP_CONFIG}" <<EOF
 [req]
-default_bits = 2048
 prompt = no
 default_md = sha256
 distinguished_name = dn
@@ -54,20 +53,25 @@ O = ESP32 Local Development
 
 [v3_req]
 basicConstraints = CA:FALSE
-keyUsage = digitalSignature, keyEncipherment
+keyUsage = digitalSignature
 extendedKeyUsage = serverAuth
 subjectAltName = @alt_names
 
 ${ALT_NAMES}
 EOF
 
+openssl ecparam \
+  -name prime256v1 \
+  -genkey \
+  -noout \
+  -out "${KEY_PEM}"
+
 openssl req \
   -x509 \
-  -nodes \
-  -newkey rsa:2048 \
+  -new \
   -sha256 \
   -days 825 \
-  -keyout "${KEY_PEM}" \
+  -key "${KEY_PEM}" \
   -out "${CERT_PEM}" \
   -config "${TMP_CONFIG}"
 

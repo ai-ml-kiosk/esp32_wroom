@@ -5,7 +5,7 @@ Professional ESP32 starter project using the Arduino framework and a modular C++
 ## Features
 
 - Serial initialization at `115200`
-- Wi-Fi connection helper with build-time environment-variable secrets
+- Wi-Fi connection helper with build-time secrets from `.env.local` or exported environment variables
 - Non-blocking heartbeat LED using `millis()`
 - I2C OLED status display support for a 4-pin screen
 - OLED header icons plus Wi-Fi-synced time and date
@@ -30,20 +30,21 @@ Professional ESP32 starter project using the Arduino framework and a modular C++
 - `certs/`: local self-signed certificate and key
 - `docs/`: reference screenshots for the browser UI
 - `.env.example`: sample local environment-variable file for Wi-Fi secrets
-- `scripts/load_build_secrets.py`: loads selected PlatformIO build settings from shell environment variables
+- `scripts/load_build_secrets.py`: loads selected PlatformIO build settings from `.env.local` and exported environment variables
 - `scripts/generate_self_signed_cert.sh`: regenerates the local TLS assets
 - `src/*.cpp`: implementation files
 
 ## Getting Started
 
 1. Create a local `.env.local` file based on `.env.example` and set your Wi-Fi values there.
-2. Export the variables into your shell with `set -a && source .env.local && set +a`.
-3. Adjust the timezone or NTP servers in `include/AppConfig.h` if you want the OLED time/date to use a different locale.
-4. Generate local TLS assets with `./scripts/generate_self_signed_cert.sh`.
-5. Build the project with `pio run`.
-6. Flash the board with `pio run --target upload`.
-7. Open the serial monitor with `pio device monitor`.
-8. Open the printed HTTPS dashboard URL in a browser to view live board status.
+2. Adjust the timezone or NTP servers in `include/AppConfig.h` if you want the OLED time/date to use a different locale.
+3. Generate local TLS assets with `./scripts/generate_self_signed_cert.sh`.
+4. Build the project with `pio run`.
+5. Flash the board with `pio run --target upload`.
+6. Open the serial monitor with `pio device monitor`.
+7. Open the printed HTTPS dashboard URL in a browser to view live board status.
+
+Exporting the same variables in your shell is still supported, and shell values override `.env.local` during the build.
 
 ## OLED Wiring
 
@@ -93,19 +94,19 @@ Choose a fixed IP that is free on your LAN or reserved for the ESP32 in your rou
 
 ## Browser UI Preview
 
-These screenshots were captured from a live ESP32 board responding at the fixed IP `192.168.1.176`. Your SSID, IP address, uptime, and signal values will vary.
+These screenshots are cropped to the app window only and use representative board data so the layout stays readable in the documentation. Your SSID, IP address, uptime, scan results, and signal values will vary on a real device.
 
-### HTTPS dashboard
+### HTTPS status page
 
-Main live status page served over HTTPS:
+Main live status page served over HTTPS on `/`:
 
-![HTTPS dashboard preview](docs/https-dashboard.png)
+![HTTPS status page preview](docs/https-status-page.png)
 
-### HTTP setup page
+### HTTPS setup page
 
-Bootstrap page served on port `80` to help users reach the HTTPS dashboard and download the certificate:
+Configuration page served over HTTPS on `/setup` for Wi-Fi, IP mode, regional settings, and Bluetooth controls:
 
-![HTTP setup page preview](docs/http-bootstrap.png)
+![HTTPS setup page preview](docs/https-setup-page.png)
 
 The firmware serves on port `443` with a project-local self-signed certificate. Browsers will warn until you trust `certs/status-server-cert.pem`.
 
@@ -113,7 +114,7 @@ When the ESP32 joins your normal Wi-Fi network, the preferred URL is `https://es
 
 If the board cannot join the configured Wi-Fi network, it automatically starts a fallback access point using the `kFallbackApSsidPrefix` and `kFallbackApPassword` values in `include/AppConfig.h`. In that mode, use `https://192.168.4.1/`.
 
-If you open `http://` or only the bare IP address, port `80` now serves a bootstrap page. It links to the HTTPS dashboard, shows the preferred hostname and direct fixed-IP option when available, and lets you download the certificate at `/cert.pem`.
+If you open `http://` or only the bare IP address, port `80` now serves a bootstrap page. It links to both HTTPS pages, shows the preferred hostname and direct fixed-IP option when available, and lets you download the certificate at `/cert.pem`.
 
 In fixed-IP station mode, the certificate matches both `esp32-status.local` and the configured fixed IP address. In dynamic-IP station mode, use `esp32-status.local` because the certificate does not follow a DHCP-assigned IP.
 
