@@ -19,6 +19,18 @@
 #define APP_FALLBACK_AP_PASSWORD "change-me-ap"
 #endif
 
+#ifndef APP_POWER_SENSE_PIN
+#define APP_POWER_SENSE_PIN -1
+#endif
+
+#ifndef APP_POWER_SENSE_DIVIDER_RATIO
+#define APP_POWER_SENSE_DIVIDER_RATIO 1.0f
+#endif
+
+#ifndef APP_POWER_SENSE_OFFSET_MV
+#define APP_POWER_SENSE_OFFSET_MV 0
+#endif
+
 namespace AppConfig {
 
 constexpr char kWiFiSsid[] = APP_WIFI_SSID;
@@ -28,11 +40,11 @@ constexpr char kFallbackApPassword[] = APP_FALLBACK_AP_PASSWORD;
 constexpr char kStatusHostName[] = "esp32-status";
 constexpr char kDefaultTimeZoneId[] = "australia_sydney";
 constexpr char kTimeZone[] = "AEST-10AEDT,M10.1.0/2,M4.1.0/3";
-constexpr char kDefaultDateFormatId[] = "dd-mon-yyyy";
+constexpr char kDefaultDateFormatId[] = "dd.mm.yyyy";
 constexpr char kNtpServerPrimary[] = "pool.ntp.org";
 constexpr char kNtpServerSecondary[] = "time.google.com";
 constexpr char kNtpServerTertiary[] = "time.cloudflare.com";
-constexpr bool kUseStaticStationIp = true;
+constexpr bool kUseStaticStationIp = false;
 const IPAddress kStationStaticIp(192, 168, 1, 176);
 const IPAddress kStationGateway(192, 168, 1, 1);
 const IPAddress kStationSubnet(255, 255, 255, 0);
@@ -52,6 +64,12 @@ constexpr uint8_t kDisplayPrimaryI2cAddress = 0x3C;
 constexpr uint8_t kDisplaySecondaryI2cAddress = 0x3D;
 constexpr unsigned long kDisplayRefreshMs = 1000;
 constexpr unsigned long kDisplayPageDurationMs = 4000;
+constexpr int kPowerSensePin = APP_POWER_SENSE_PIN;
+constexpr float kPowerSenseDividerRatio = APP_POWER_SENSE_DIVIDER_RATIO;
+constexpr int32_t kPowerSenseOffsetMilliVolts = APP_POWER_SENSE_OFFSET_MV;
+constexpr unsigned long kPowerSampleIntervalMs = 2000;
+constexpr uint8_t kPowerSampleCount = 8;
+constexpr uint32_t kPowerStableWindowMilliVolts = 120;
 
 #ifndef LED_BUILTIN
 constexpr uint8_t kHeartbeatLedPin = 2;
@@ -61,5 +79,9 @@ constexpr uint8_t kHeartbeatLedPin = LED_BUILTIN;
 
 static_assert(sizeof(kFallbackApPassword) > 8,
               "Fallback AP password must be at least 8 characters long.");
+static_assert(kPowerSenseDividerRatio > 0.0f,
+              "Power sense divider ratio must be greater than zero.");
+static_assert(kPowerSampleCount > 0,
+              "Power sample count must be greater than zero.");
 
 }  // namespace AppConfig

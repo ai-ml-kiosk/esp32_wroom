@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <Preferences.h>
+#include <ctype.h>
 #include <time.h>
 
 #include "AppConfig.h"
@@ -23,6 +24,9 @@ struct DateFormatOptionInternal {
 };
 
 constexpr time_t kMinimumValidEpoch = 946684800;
+constexpr char kCustomDateFormatId[] = "custom";
+constexpr char kCustomDateFormatLabel[] = "Custom";
+constexpr size_t kMaxCustomDateFormatLength = 32;
 
 const TimeZoneOptionInternal kTimeZoneOptions[] = {
     {"australia_sydney", "Australia/Sydney", AppConfig::kTimeZone, "AEST"},
@@ -62,10 +66,13 @@ bool preferencesInitialized = false;
 bool preferencesAvailable = false;
 const TimeZoneOptionInternal *configuredTimeZone = &kTimeZoneOptions[0];
 const DateFormatOptionInternal *configuredDateFormat = &kDateFormatOptions[0];
+bool configuredDateFormatIsCustom = false;
+String configuredCustomDateFormat;
 
 constexpr char kPreferencesNamespace[] = "status-reg";
 constexpr char kTimeZonePreferenceKey[] = "tz-id";
 constexpr char kDateFormatPreferenceKey[] = "date-fmt";
+constexpr char kCustomDateFormatPreferenceKey[] = "date-pat";
 
 const TimeZoneOptionInternal *findTimeZoneOptionById(const String &id) {
   for (const TimeZoneOptionInternal &option : kTimeZoneOptions) {
@@ -85,6 +92,179 @@ const DateFormatOptionInternal *findDateFormatOptionById(const String &id) {
   }
 
   return nullptr;
+}
+
+String normalizeDateFormatToken(const String &token) {
+  String normalized = token;
+  normalized.toUpperCase();
+
+  if (normalized == "DD" || normalized == "MM" || normalized == "YY" ||
+      normalized == "YYYY" || normalized == "MON" ||
+      normalized == "MONTH") {
+    return normalized;
+  }
+
+  if (normalized == "MMM") {
+    return "MON";
+  }
+
+  return "";
+}
+
+bool normalizeCustomDateFormatPattern(const String &pattern,
+                                      String *normalizedPattern) {
+  String trimmed = pattern;
+  trimmed.trim();
+
+  if (trimmed.length() == 0 || trimmed.length() > kMaxCustomDateFormatLength) {
+    return false;
+  }
+
+  String normalized;
+  normalized.reserve(trimmed.length());
+  bool hasToken = false;
+
+  for (size_t index = 0; index < trimmed.length();) {
+    const unsigned char current =
+        static_cast<unsigned char>(trimmed[index]);
+    if (isalpha(current)) {
+      const size_t tokenStart = index;
+      while (index < trimmed.length() &&
+             isalpha(static_cast<unsigned char>(trimmed[index]))) {
+        ++index;
+      }
+
+      const String token = trimmed.substring(tokenStart, index);
+      const String normalizedToken = normalizeDateFormatToken(token);
+      if (normalizedToken.length() == 0) {
+        return false;
+      }
+
+      normalized += normalizedToken;
+      hasToken = true;
+    } else {
+      if (current < 32 || current > 126) {
+        return false;
+      }
+
+      normalized += static_cast<char>(current);
+      ++index;
+    }
+
+    if (normalized.length() > kMaxCustomDateFormatLength) {
+      return false;
+    }
+  }
+
+  if (!hasToken) {
+    return false;
+  }
+
+  if (normalizedPattern != nullptr) {
+    *normalizedPattern = normalized;
+  }
+
+  return true;
+}
+
+String formatPatternTokenValue(const String &token, const struct tm &timeInfo) {
+  char buffer[24];
+
+  if (token == "DD") {
+    snprintf(buffer, sizeof(buffer), "%02d", timeInfo.tm_mday);
+    return String(buffer);
+  }
+
+  if (token == "MM") {
+    snprintf(buffer, sizeof(buffer), "%02d", timeInfo.tm_mon + 1);
+    return String(buffer);
+  }
+
+  if (token == "YY") {
+    strftime(buffer, sizeof(buffer), "%y", &timeInfo);
+    return String(buffer);
+  }
+
+  if (token == "YYYY") {
+    strftime(buffer, sizeof(buffer), "%Y", &timeInfo);
+    return String(buffer);
+  }
+
+  if (token == "MON") {
+    strftime(buffer, sizeof(buffer), "%b", &timeInfo);
+    String value(buffer);
+    value.toUpperCase();
+    return value;
+  }
+
+  if (token == "MONTH") {
+    strftime(buffer, sizeof(buffer), "%B", &timeInfo);
+    String value(buffer);
+    value.toUpperCase();
+    return value;
+  }
+
+  return "";
+}
+
+String buildPatternPlaceholder(const String &pattern) {
+  String placeholder;
+  placeholder.reserve(pattern.length() + 4);
+
+  for (size_t index = 0; index < pattern.length();) {
+    const unsigned char current =
+        static_cast<unsigned char>(pattern[index]);
+    if (isalpha(current)) {
+      const size_t tokenStart = index;
+      while (index < pattern.length() &&
+             isalpha(static_cast<unsigned char>(pattern[index]))) {
+        ++index;
+      }
+
+      const String token = pattern.substring(tokenStart, index);
+      if (token == "DD" || token == "MM" || token == "YY") {
+        placeholder += "--";
+      } else if (token == "YYYY") {
+        placeholder += "----";
+      } else if (token == "MON") {
+        placeholder += "---";
+      } else if (token == "MONTH") {
+        placeholder += "-----";
+      } else {
+        placeholder += "?";
+      }
+    } else {
+      placeholder += static_cast<char>(current);
+      ++index;
+    }
+  }
+
+  return placeholder;
+}
+
+String formatDateWithPattern(const String &pattern, const struct tm &timeInfo) {
+  String formatted;
+  formatted.reserve(pattern.length() + 8);
+
+  for (size_t index = 0; index < pattern.length();) {
+    const unsigned char current =
+        static_cast<unsigned char>(pattern[index]);
+    if (isalpha(current)) {
+      const size_t tokenStart = index;
+      while (index < pattern.length() &&
+             isalpha(static_cast<unsigned char>(pattern[index]))) {
+        ++index;
+      }
+
+      const String token = pattern.substring(tokenStart, index);
+      formatted += formatPatternTokenValue(token, timeInfo);
+    } else {
+      formatted += static_cast<char>(current);
+      ++index;
+    }
+  }
+
+  return formatted;
 }
 
 void applyConfiguredTimeZone() {
@@ -110,6 +290,8 @@ void ensurePreferencesReady() {
   if (defaultDateFormat != nullptr) {
     configuredDateFormat = defaultDateFormat;
   }
+  configuredDateFormatIsCustom = false;
+  configuredCustomDateFormat = "";
 
   if (!preferences.begin(kPreferencesNamespace, false)) {
     Serial.println(
@@ -130,15 +312,29 @@ void ensurePreferencesReady() {
 
   const String savedDateFormatId = preferences.getString(
       kDateFormatPreferenceKey, AppConfig::kDefaultDateFormatId);
-  const DateFormatOptionInternal *savedDateFormat =
-      findDateFormatOptionById(savedDateFormatId);
-  if (savedDateFormat != nullptr) {
-    configuredDateFormat = savedDateFormat;
+  if (savedDateFormatId == kCustomDateFormatId) {
+    String savedCustomPattern =
+        preferences.getString(kCustomDateFormatPreferenceKey, "");
+    String normalizedCustomPattern;
+    if (normalizeCustomDateFormatPattern(savedCustomPattern,
+                                         &normalizedCustomPattern)) {
+      configuredDateFormatIsCustom = true;
+      configuredCustomDateFormat = normalizedCustomPattern;
+    }
+  } else {
+    const DateFormatOptionInternal *savedDateFormat =
+        findDateFormatOptionById(savedDateFormatId);
+    if (savedDateFormat != nullptr) {
+      configuredDateFormat = savedDateFormat;
+    }
   }
 
   applyConfiguredTimeZone();
   Serial.printf("Regional settings loaded: timezone=%s, dateFormat=%s.\n",
-                configuredTimeZone->label, configuredDateFormat->label);
+                configuredTimeZone->label,
+                configuredDateFormatIsCustom
+                    ? configuredCustomDateFormat.c_str()
+                    : configuredDateFormat->label);
 }
 
 String formatDateWithOption(const DateFormatOptionInternal *option,
@@ -202,17 +398,40 @@ String getConfiguredTimeZonePosix() {
 
 String getConfiguredDateFormatId() {
   ensurePreferencesReady();
+  if (configuredDateFormatIsCustom) {
+    return String(kCustomDateFormatId);
+  }
   return String(configuredDateFormat->id);
 }
 
 String getConfiguredDateFormatLabel() {
   ensurePreferencesReady();
+  if (configuredDateFormatIsCustom) {
+    return String(kCustomDateFormatLabel) + " (" + configuredCustomDateFormat +
+           ")";
+  }
   return String(configuredDateFormat->label);
 }
 
 String getConfiguredDatePlaceholder() {
   ensurePreferencesReady();
+  if (configuredDateFormatIsCustom) {
+    return buildPatternPlaceholder(configuredCustomDateFormat);
+  }
   return String(configuredDateFormat->placeholder);
+}
+
+String getConfiguredDateFormatPattern() {
+  ensurePreferencesReady();
+  if (configuredDateFormatIsCustom) {
+    return configuredCustomDateFormat;
+  }
+  return String(configuredDateFormat->label);
+}
+
+bool isConfiguredDateFormatCustom() {
+  ensurePreferencesReady();
+  return configuredDateFormatIsCustom;
 }
 
 bool setConfiguredTimeZoneById(const String &id) {
@@ -243,12 +462,39 @@ bool setConfiguredDateFormatById(const String &id) {
     return false;
   }
 
-  if (configuredDateFormat != option) {
+  if (configuredDateFormatIsCustom || configuredDateFormat != option) {
+    configuredDateFormatIsCustom = false;
+    configuredCustomDateFormat = "";
     configuredDateFormat = option;
     if (preferencesAvailable) {
       preferences.putString(kDateFormatPreferenceKey, option->id);
+      preferences.remove(kCustomDateFormatPreferenceKey);
     }
     Serial.printf("Date format updated to %s.\n", option->label);
+  }
+
+  return true;
+}
+
+bool setConfiguredCustomDateFormat(const String &pattern) {
+  ensurePreferencesReady();
+
+  String normalizedPattern;
+  if (!normalizeCustomDateFormatPattern(pattern, &normalizedPattern)) {
+    return false;
+  }
+
+  if (!configuredDateFormatIsCustom ||
+      configuredCustomDateFormat != normalizedPattern) {
+    configuredDateFormatIsCustom = true;
+    configuredCustomDateFormat = normalizedPattern;
+    if (preferencesAvailable) {
+      preferences.putString(kDateFormatPreferenceKey, kCustomDateFormatId);
+      preferences.putString(kCustomDateFormatPreferenceKey,
+                            configuredCustomDateFormat);
+    }
+    Serial.printf("Date format updated to custom pattern %s.\n",
+                  configuredCustomDateFormat.c_str());
   }
 
   return true;
@@ -296,6 +542,9 @@ String getFormattedCurrentTime() {
 
 String formatConfiguredDate(const struct tm &timeInfo) {
   ensurePreferencesReady();
+  if (configuredDateFormatIsCustom) {
+    return formatDateWithPattern(configuredCustomDateFormat, timeInfo);
+  }
   return formatDateWithOption(configuredDateFormat, timeInfo);
 }
 

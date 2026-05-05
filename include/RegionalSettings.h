@@ -26,9 +26,12 @@ String getConfiguredTimeZonePosix();
 String getConfiguredDateFormatId();
 String getConfiguredDateFormatLabel();
 String getConfiguredDatePlaceholder();
+String getConfiguredDateFormatPattern();
+bool isConfiguredDateFormatCustom();
 
 bool setConfiguredTimeZoneById(const String &id);
 bool setConfiguredDateFormatById(const String &id);
+bool setConfiguredCustomDateFormat(const String &pattern);
 
 bool hasSynchronizedClock();
 bool getCurrentLocalTimeInfo(struct tm *timeInfo);

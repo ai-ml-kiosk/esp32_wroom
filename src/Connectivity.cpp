@@ -36,6 +36,7 @@ bool preferencesAvailable = false;
 
 constexpr char kPreferencesNamespace[] = "status-net";
 constexpr char kStaticIpPreferenceKey[] = "static-ip";
+constexpr char kDynamicIpMigrationPreferenceKey[] = "ipmig-v1";
 constexpr char kWiFiSsidPreferenceKey[] = "wifi-ssid";
 constexpr char kWiFiPasswordPreferenceKey[] = "wifi-pass";
 constexpr char kStationIpPreferenceKey[] = "sta-ip";
@@ -153,6 +154,28 @@ bool shouldReplacePlaceholderStationConfig(const String &ssid,
          String(AppConfig::kWiFiSsid) != kPlaceholderWiFiSsid;
 }
 
+void migrateSavedIpModeToDynamicDefaultIfNeeded() {
+  if (!preferencesAvailable || AppConfig::kUseStaticStationIp) {
+    return;
+  }
+
+  if (preferences.getBool(kDynamicIpMigrationPreferenceKey, false)) {
+    return;
+  }
+
+  const bool hadSavedIpMode = preferences.isKey(kStaticIpPreferenceKey);
+  const bool savedFixedIpEnabled =
+      preferences.getBool(kStaticIpPreferenceKey, AppConfig::kUseStaticStationIp);
+
+  if (hadSavedIpMode && savedFixedIpEnabled) {
+    preferences.putBool(kStaticIpPreferenceKey, false);
+    Serial.println(
+        "Migrated saved station IP mode from fixed to dynamic for this firmware.");
+  }
+
+  preferences.putBool(kDynamicIpMigrationPreferenceKey, true);
+}
+
 void loadSavedStationConfig() {
   if (!preferencesAvailable) {
     return;
@@ -186,6 +209,8 @@ void loadSavedStationConfig() {
     Serial.println(
         "Replaced placeholder saved Wi-Fi credentials with the current build configuration.");
   }
+
+  migrateSavedIpModeToDynamicDefaultIfNeeded();
 
   staticStationIpEnabled =
       preferences.getBool(kStaticIpPreferenceKey, AppConfig::kUseStaticStationIp);

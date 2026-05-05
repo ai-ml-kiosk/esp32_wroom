@@ -6,6 +6,7 @@
 #include "AppConfig.h"
 #include "Connectivity.h"
 #include "Heartbeat.h"
+#include "PowerMonitor.h"
 #include "RegionalSettings.h"
 #include "StatusDisplay.h"
 
@@ -37,6 +38,9 @@ constexpr uint8_t kUptimeRow = 4;
 constexpr uint8_t kIdentityRow = 5;
 constexpr uint8_t kAddressRow = 6;
 constexpr uint8_t kSignalRow = 7;
+constexpr uint8_t kLowerPaneFirstRow = kUptimeRow;
+constexpr uint8_t kLowerPaneVisibleRowCount =
+    (kSignalRow - kLowerPaneFirstRow) + 1;
 constexpr unsigned long kSignalRefreshMs = 5000;
 constexpr unsigned long kAddressScrollRefreshMs = 350;
 constexpr uint8_t kAddressScrollGapColumns = 3;
@@ -61,7 +65,14 @@ const uint8_t kBatteryIconActive[] = {
     0x7E, 0x7E, 0x7E, 0x42, 0x7E, 0x18, 0x18, 0x00,
 };
 
+struct StatusLine {
+  String text;
+  bool horizontalScroll;
+};
+
 String getDateLine();
+void drawAddressLine(const uint8_t row, const String &text,
+                     const unsigned long nowMs);
 
 void resetDisplayCache() {
   displayCacheValid = false;
@@ -268,6 +279,27 @@ String getUptimeLine() {
   return String(buffer);
 }
 
+size_t getLowerPaneStartIndex(const size_t lineCount,
+                              const unsigned long nowMs) {
+  if (lineCount <= kLowerPaneVisibleRowCount ||
+      AppConfig::kDisplayPageDurationMs == 0) {
+    return 0;
+  }
+
+  const size_t pageCount = lineCount - kLowerPaneVisibleRowCount + 1;
+  return (nowMs / AppConfig::kDisplayPageDurationMs) % pageCount;
+}
+
+void drawStatusLine(const uint8_t row, const StatusLine &line,
+                    const unsigned long nowMs) {
+  if (line.horizontalScroll) {
+    drawAddressLine(row, line.text, nowMs);
+    return;
+  }
+
+  drawLine(row, line.text);
+}
+
 void drawCommonTopRows() {
   drawHeaderRow();
   drawLine(1, "");
@@ -359,6 +391,8 @@ String getSignalLine() {
   return cachedSignalLine;
 }
 
+String getVoltageLine() { return getPowerVoltageDisplayLine(); }
+
 void drawBootScreen() {
   display.clearDisplay();
   drawCommonTopRows();
@@ -371,10 +405,30 @@ void drawBootScreen() {
 
 void drawStatusPage(const unsigned long nowMs) {
   drawCommonTopRows();
-  drawLine(kUptimeRow, getUptimeLine());
-  drawLine(kIdentityRow, getIdentityLine());
-  drawAddressLine(kAddressRow, getAddressLine(), nowMs);
-  drawLine(kSignalRow, getSignalLine());
+
+  const StatusLine lowerPaneLines[] = {
+      {getUptimeLine(), false},
+      {getIdentityLine(), false},
+      {getAddressLine(), true},
+      {getSignalLine(), false},
+      {getVoltageLine(), false},
+  };
+  const size_t lowerPaneLineCount =
+      sizeof(lowerPaneLines) / sizeof(lowerPaneLines[0]);
+  const size_t lowerPaneStartIndex =
+      getLowerPaneStartIndex(lowerPaneLineCount, nowMs);
+
+  for (uint8_t rowOffset = 0; rowOffset < kLowerPaneVisibleRowCount;
+       ++rowOffset) {
+    const uint8_t row = kLowerPaneFirstRow + rowOffset;
+    const size_t lineIndex = lowerPaneStartIndex + rowOffset;
+    if (lineIndex >= lowerPaneLineCount) {
+      drawLine(row, "");
+      continue;
+    }
+
+    drawStatusLine(row, lowerPaneLines[lineIndex], nowMs);
+  }
 }
 
 void refreshStatusDisplay(const unsigned long nowMs) {

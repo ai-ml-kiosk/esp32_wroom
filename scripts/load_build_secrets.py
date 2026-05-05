@@ -5,10 +5,13 @@ Import("env")
 
 
 ENV_VAR_MAPPINGS = {
-    "ESP32_WIFI_SSID": "APP_WIFI_SSID",
-    "ESP32_WIFI_PASSWORD": "APP_WIFI_PASSWORD",
-    "ESP32_FALLBACK_AP_SSID_PREFIX": "APP_FALLBACK_AP_SSID_PREFIX",
-    "ESP32_FALLBACK_AP_PASSWORD": "APP_FALLBACK_AP_PASSWORD",
+    "ESP32_WIFI_SSID": ("APP_WIFI_SSID", "string"),
+    "ESP32_WIFI_PASSWORD": ("APP_WIFI_PASSWORD", "string"),
+    "ESP32_FALLBACK_AP_SSID_PREFIX": ("APP_FALLBACK_AP_SSID_PREFIX", "string"),
+    "ESP32_FALLBACK_AP_PASSWORD": ("APP_FALLBACK_AP_PASSWORD", "string"),
+    "ESP32_POWER_SENSE_PIN": ("APP_POWER_SENSE_PIN", "raw"),
+    "ESP32_POWER_SENSE_DIVIDER_RATIO": ("APP_POWER_SENSE_DIVIDER_RATIO", "raw"),
+    "ESP32_POWER_SENSE_OFFSET_MV": ("APP_POWER_SENSE_OFFSET_MV", "raw"),
 }
 
 
@@ -46,10 +49,20 @@ def escape_c_string(value):
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def append_cpp_define(define_name, value, define_type):
+    if define_type == "string":
+        env.Append(
+            CPPDEFINES=[(define_name, '\\"{}\\"'.format(escape_c_string(value)))]
+        )
+        return
+
+    env.Append(CPPDEFINES=[(define_name, value)])
+
+
 project_dir = Path(env.subst("$PROJECT_DIR"))
 dotenv_values = load_dotenv_file(project_dir / ".env.local")
 loaded = []
-for env_name, define_name in ENV_VAR_MAPPINGS.items():
+for env_name, (define_name, define_type) in ENV_VAR_MAPPINGS.items():
     value = os.getenv(env_name)
     source = "environment"
     if not value:
@@ -58,7 +71,7 @@ for env_name, define_name in ENV_VAR_MAPPINGS.items():
     if not value:
         continue
 
-    env.Append(CPPDEFINES=[(define_name, '\\"{}\\"'.format(escape_c_string(value)))])
+    append_cpp_define(define_name, value, define_type)
     loaded.append("{} ({})".format(env_name, source))
 
 if loaded:

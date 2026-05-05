@@ -12,6 +12,7 @@
 #include "BluetoothManager.h"
 #include "Connectivity.h"
 #include "Heartbeat.h"
+#include "PowerMonitor.h"
 #include "RegionalSettings.h"
 #include "StatusServer.h"
 #include "generated/StatusServerCertPem.h"
@@ -23,6 +24,9 @@ httpd_handle_t serverHandle = nullptr;
 bool mdnsStarted = false;
 WebServer redirectServer(80);
 bool redirectServerStarted = false;
+String httpsStartupMessage = "HTTPS status server has not started yet.";
+unsigned long lastHttpsStartAttemptMs = 0;
+constexpr unsigned long kHttpsStartRetryMs = 5000;
 String lastAnnouncedIpAddress;
 bool lastAnnouncedMdnsStarted = false;
 bool lastAnnouncedStationConnected = false;
@@ -37,6 +41,9 @@ String buildDirectHttpsUrl(const String &path);
 String buildHttpsUrl(const String &path);
 String buildHttpUrlForHost(const String &host, const String &path);
 String buildDirectHttpUrl(const String &path);
+bool ensureHttpsServerStarted();
+void ensureHttpBootstrapServer();
+void handleHttpLanding();
 
 String jsonEscape(const String &value) {
   String escaped;
@@ -151,7 +158,7 @@ String buildStationIpConfigJsonObject(const StationIpConfig &config) {
 
 String buildRegionalStatusJsonFields() {
   String json;
-  json.reserve(320);
+  json.reserve(512);
   json += "\"clockReady\":";
   json += hasSynchronizedClock() ? "true," : "false,";
   json += "\"localTime\":\"" + jsonEscape(getFormattedCurrentTime()) + "\",";
@@ -165,6 +172,10 @@ String buildRegionalStatusJsonFields() {
           jsonEscape(getConfiguredDateFormatId()) + "\",";
   json += "\"dateFormatLabel\":\"" +
           jsonEscape(getConfiguredDateFormatLabel()) + "\",";
+  json += "\"dateFormatPattern\":\"" +
+          jsonEscape(getConfiguredDateFormatPattern()) + "\",";
+  json += "\"dateFormatCustom\":";
+  json += isConfiguredDateFormatCustom() ? "true," : "false,";
   return json;
 }
 
@@ -195,7 +206,7 @@ String buildTimeZoneOptionsJsonArray() {
 
 String buildDateFormatOptionsJsonArray() {
   String json;
-  json.reserve(512);
+  json.reserve(640);
   json += "[";
 
   for (size_t index = 0; index < getSupportedDateFormatCount(); ++index) {
@@ -214,6 +225,14 @@ String buildDateFormatOptionsJsonArray() {
     json += "}";
   }
 
+  if (json.length() > 1) {
+    json += ",";
+  }
+  json += "{";
+  json += "\"id\":\"custom\",";
+  json += "\"label\":\"Custom\"";
+  json += "}";
+
   json += "]";
   return json;
 }
@@ -221,7 +240,7 @@ String buildDateFormatOptionsJsonArray() {
 String buildRegionalSettingsJson(const bool ok, const bool includeOptions,
                                  const String &message) {
   String json;
-  json.reserve(includeOptions ? 2300 : 700);
+  json.reserve(includeOptions ? 2800 : 900);
   json += "{";
   json += "\"ok\":";
   json += ok ? "true," : "false,";
@@ -243,6 +262,8 @@ String buildStatusJson() {
   const bool stationConnected = isStationConnected();
   const bool accessPointEnabled = isAccessPointActive();
   const bool staticIpEnabled = isStaticStationIpEnabled();
+  const bool powerSenseConfigured = isPowerSenseConfigured();
+  const bool powerVoltageAvailable = isPowerVoltageAvailable();
   const unsigned long uptimeMs = millis();
   const StationIpConfig stationIpConfig = getConfiguredStationIpConfig();
   const String dashboardUrl = buildHttpsUrl("/");
@@ -294,6 +315,19 @@ String buildStatusJson() {
   json += "\"flashBytes\":" + String(ESP.getFlashChipSize()) + ",";
   json += "\"sdkVersion\":\"" + jsonEscape(String(ESP.getSdkVersion())) + "\",";
   json += "\"chipRevision\":" + String(ESP.getChipRevision()) + ",";
+  json += "\"powerSenseConfigured\":";
+  json += powerSenseConfigured ? "true," : "false,";
+  json += "\"powerVoltageAvailable\":";
+  json += powerVoltageAvailable ? "true," : "false,";
+  json += "\"powerVoltageVolts\":";
+  if (powerVoltageAvailable) {
+    json += String(getPowerVoltageVolts(), 2);
+  } else {
+    json += "null";
+  }
+  json += ",";
+  json += "\"powerVoltageLabel\":\"" +
+          jsonEscape(getPowerVoltageLabel()) + "\",";
   json += buildRegionalStatusJsonFields();
   json += "\"networkMode\":\"" + jsonEscape(getNetworkModeName()) + "\",";
   json += "\"connectionStatus\":\"" + jsonEscape(getConnectionStatusText()) +
@@ -953,6 +987,7 @@ esp_err_t handleDashboard(httpd_req_t *req) {
           <div class="row"><dt>Free Heap</dt><dd id="freeHeap">-</dd></div>
           <div class="row"><dt>CPU</dt><dd id="cpu">-</dd></div>
           <div class="row"><dt>Flash</dt><dd id="flash">-</dd></div>
+          <div class="row"><dt>Voltage</dt><dd id="powerVoltage">-</dd></div>
           <div class="row"><dt>SDK</dt><dd id="sdkVersion">-</dd></div>
           <div class="row"><dt>Heartbeat</dt><dd id="heartbeatState">-</dd></div>
         </dl>
@@ -1017,6 +1052,7 @@ esp_err_t handleDashboard(httpd_req_t *req) {
     const refreshMs = 2000;
     let refreshTimerId = null;
     let pageClosing = false;
+    let refreshInFlight = false;
 
     function byId(id) {
       return document.getElementById(id);
@@ -1143,6 +1179,7 @@ esp_err_t handleDashboard(httpd_req_t *req) {
       setText('freeHeap', formatBytes(data.freeHeapBytes));
       setText('cpu', safeText(data.cpuMHz, '-') + ' MHz');
       setText('flash', formatBytes(data.flashBytes));
+      setText('powerVoltage', data.powerVoltageLabel, 'Unavailable');
       setText('sdkVersion', data.sdkVersion);
       setText(
         'heartbeatState',
@@ -1159,10 +1196,11 @@ esp_err_t handleDashboard(httpd_req_t *req) {
     }
 
     async function refreshStatus() {
-      if (pageClosing) {
+      if (pageClosing || refreshInFlight) {
         return;
       }
 
+      refreshInFlight = true;
       try {
         const response = await fetch('/api/status', { cache: 'no-store' });
         const data = await response.json();
@@ -1178,6 +1216,8 @@ esp_err_t handleDashboard(httpd_req_t *req) {
 
         byId('lastUpdated').textContent = 'refresh failed';
         setPill('Status unavailable', false);
+      } finally {
+        refreshInFlight = false;
       }
     }
 
@@ -1411,10 +1451,21 @@ esp_err_t handleSetupPage(httpd_req_t *req) {
       font: inherit;
     }
 
+    input:disabled,
+    select:disabled {
+      opacity: 0.72;
+      cursor: not-allowed;
+      background: rgba(226, 232, 240, 0.72);
+    }
+
     input:focus,
     select:focus {
       outline: 2px solid rgba(15, 118, 110, 0.28);
       border-color: rgba(15, 118, 110, 0.35);
+    }
+
+    .span-all {
+      grid-column: 1 / -1;
     }
 
     .row {
@@ -1579,6 +1630,19 @@ esp_err_t handleSetupPage(httpd_req_t *req) {
         </div>
       </article>
 
+      <article class="card wide">
+        <h2>Bluetooth Setup</h2>
+        <p class="note" id="bluetoothSummary">Loading Bluetooth state...</p>
+        <div class="button-row">
+          <button id="scanBluetoothButton" type="button">Scan BLE Devices</button>
+          <button class="secondary warn" id="disconnectBluetoothButton" type="button">Disconnect</button>
+        </div>
+        <div class="banner" id="bluetoothBanner"></div>
+        <div class="scan-list" id="bluetoothList">
+          <p class="empty">Run a BLE scan to view nearby peripherals.</p>
+        </div>
+      </article>
+
       <article class="card">
         <h2>IP Setup</h2>
         <div class="row">
@@ -1629,26 +1693,18 @@ esp_err_t handleSetupPage(httpd_req_t *req) {
             <span>Date Format</span>
             <select id="dateFormatSelect"></select>
           </label>
+          <label class="span-all">
+            <span>Custom Date Format</span>
+            <input id="customDateFormatInput" autocomplete="off" placeholder="DD.MM.YYYY" spellcheck="false" disabled>
+          </label>
         </div>
+        <p class="note" id="dateFormatHint">Choose a preset or select Custom to enter a format such as DD.MM.YYYY using tokens DD, MM, MON, MONTH, YY, or YYYY.</p>
         <div class="button-row">
           <button id="saveRegionalButton" type="button">Save Regional Settings</button>
         </div>
         <p class="note" id="regionalSummary">Current regional settings are loading...</p>
         <p class="note" id="regionalPreview">Board time preview is loading...</p>
         <div class="banner" id="regionalBanner"></div>
-      </article>
-
-      <article class="card wide">
-        <h2>Bluetooth Setup</h2>
-        <p class="note" id="bluetoothSummary">Loading Bluetooth state...</p>
-        <div class="button-row">
-          <button id="scanBluetoothButton" type="button">Scan BLE Devices</button>
-          <button class="secondary warn" id="disconnectBluetoothButton" type="button">Disconnect</button>
-        </div>
-        <div class="banner" id="bluetoothBanner"></div>
-        <div class="scan-list" id="bluetoothList">
-          <p class="empty">Run a BLE scan to view nearby peripherals.</p>
-        </div>
       </article>
     </section>
 
@@ -1662,6 +1718,7 @@ esp_err_t handleSetupPage(httpd_req_t *req) {
     let formsHydrated = false;
     let bluetoothScanInFlight = false;
     let regionalFormsHydrated = false;
+    let setupRefreshInFlight = false;
     let refreshTimerId = null;
     let pageClosing = false;
     const activeRequests = new Set();
@@ -1756,6 +1813,17 @@ esp_err_t handleSetupPage(httpd_req_t *req) {
       }).join('');
     }
 
+    function syncCustomDateFormatControls() {
+      const select = byId('dateFormatSelect');
+      const input = byId('customDateFormatInput');
+      const isCustom = select.value === 'custom';
+
+      input.disabled = !isCustom;
+      byId('dateFormatHint').textContent = isCustom
+        ? 'Custom format tokens: DD, MM, MON, MONTH, YY, and YYYY. Example: DD.MM.YYYY.'
+        : 'Choose a preset or select Custom to enter a format such as DD.MM.YYYY.';
+    }
+
     function syncRegionalSummary(data) {
       byId('regionalSummary').textContent =
         'Current: ' + safeText(data.timeZoneLabel, '-') + ' • ' + safeText(data.dateFormatLabel, '-');
@@ -1781,6 +1849,11 @@ esp_err_t handleSetupPage(httpd_req_t *req) {
         byId('dateFormatSelect').value = safeText(data.dateFormatId, byId('dateFormatSelect').value);
       }
 
+      if (data.dateFormatCustom) {
+        byId('customDateFormatInput').value = safeText(data.dateFormatPattern, '');
+      }
+
+      syncCustomDateFormatControls();
       regionalFormsHydrated = true;
       syncRegionalSummary(data);
     }
@@ -1941,10 +2014,11 @@ esp_err_t handleSetupPage(httpd_req_t *req) {
     }
 
     async function refreshStatus() {
-      if (pageClosing || bluetoothScanInFlight) {
+      if (pageClosing || bluetoothScanInFlight || setupRefreshInFlight) {
         return;
       }
 
+      setupRefreshInFlight = true;
       try {
         const data = await fetchJson('/api/status', { cache: 'no-store' });
         updateStatusUi(data);
@@ -1954,6 +2028,8 @@ esp_err_t handleSetupPage(httpd_req_t *req) {
         }
 
         byId('lastUpdated').textContent = 'refresh failed';
+      } finally {
+        setupRefreshInFlight = false;
       }
     }
 
@@ -2080,17 +2156,35 @@ esp_err_t handleSetupPage(httpd_req_t *req) {
         return;
       }
 
+      const dateFormatId = byId('dateFormatSelect').value;
+      const customDateFormat = byId('customDateFormatInput').value.trim();
+
+      if (dateFormatId === 'custom' && !customDateFormat) {
+        setBanner('regionalBanner', 'Enter a custom date format before saving.', 'warn');
+        return;
+      }
+
       byId('saveRegionalButton').disabled = true;
       setBanner('regionalBanner', 'Saving timezone and date format...', 'info');
 
       try {
-        const result = await postForm('/api/regional/settings', {
+        const formValues = {
           timezone: byId('timezoneSelect').value,
-          dateFormat: byId('dateFormatSelect').value
-        });
+          dateFormat: dateFormatId
+        };
+
+        if (dateFormatId === 'custom') {
+          formValues.customDateFormat = customDateFormat;
+        }
+
+        const result = await postForm('/api/regional/settings', formValues);
 
         byId('timezoneSelect').value = safeText(result.timeZoneId, byId('timezoneSelect').value);
         byId('dateFormatSelect').value = safeText(result.dateFormatId, byId('dateFormatSelect').value);
+        if (result.dateFormatCustom) {
+          byId('customDateFormatInput').value = safeText(result.dateFormatPattern, customDateFormat);
+        }
+        syncCustomDateFormatControls();
         syncRegionalSummary(result);
         setBanner('regionalBanner', result.message, 'ok');
         await refreshStatus();
@@ -2171,6 +2265,13 @@ esp_err_t handleSetupPage(httpd_req_t *req) {
     byId('ipModeToggle').addEventListener('change', function (event) {
       updateIpMode(event.target.checked);
     });
+    byId('dateFormatSelect').addEventListener('change', syncCustomDateFormatControls);
+    byId('customDateFormatInput').addEventListener('input', function () {
+      if (byId('customDateFormatInput').value.trim()) {
+        byId('dateFormatSelect').value = 'custom';
+      }
+      syncCustomDateFormatControls();
+    });
     byId('scanWifiButton').addEventListener('click', scanWifiNetworks);
     byId('saveWifiButton').addEventListener('click', saveWifiSettings);
     byId('saveIpButton').addEventListener('click', saveIpSettings);
@@ -2217,12 +2318,16 @@ esp_err_t handleRegionalSettingsUpdate(httpd_req_t *req) {
 
   String timeZoneId;
   String dateFormatId;
+  String customDateFormat;
   getFormField(body, "timezone", &timeZoneId);
   getFormField(body, "dateFormat", &dateFormatId);
+  getFormField(body, "customDateFormat", &customDateFormat);
   timeZoneId.trim();
   dateFormatId.trim();
+  customDateFormat.trim();
 
-  if (timeZoneId.length() == 0 && dateFormatId.length() == 0) {
+  if (timeZoneId.length() == 0 && dateFormatId.length() == 0 &&
+      customDateFormat.length() == 0) {
     httpd_resp_set_status(req, "400 Bad Request");
     return sendResponse(
         req, "application/json",
@@ -2233,6 +2338,8 @@ esp_err_t handleRegionalSettingsUpdate(httpd_req_t *req) {
 
   const String previousTimeZoneId = getConfiguredTimeZoneId();
   const String previousDateFormatId = getConfiguredDateFormatId();
+  const String previousDateFormatPattern = getConfiguredDateFormatPattern();
+  const bool previousDateFormatCustom = isConfiguredDateFormatCustom();
 
   if (timeZoneId.length() > 0 && !setConfiguredTimeZoneById(timeZoneId)) {
     httpd_resp_set_status(req, "400 Bad Request");
@@ -2242,20 +2349,37 @@ esp_err_t handleRegionalSettingsUpdate(httpd_req_t *req) {
                                   "Unsupported timezone selection."));
   }
 
-  if (dateFormatId.length() > 0 &&
-      !setConfiguredDateFormatById(dateFormatId)) {
-    httpd_resp_set_status(req, "400 Bad Request");
-    return sendResponse(
-        req, "application/json",
-        buildRegionalSettingsJson(false, false,
-                                  "Unsupported date format selection."));
+  if (dateFormatId.length() > 0 || customDateFormat.length() > 0) {
+    const bool useCustomDateFormat =
+        dateFormatId == "custom" || customDateFormat.length() > 0;
+
+    if (useCustomDateFormat) {
+      if (customDateFormat.length() == 0 ||
+          !setConfiguredCustomDateFormat(customDateFormat)) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return sendResponse(
+            req, "application/json",
+            buildRegionalSettingsJson(
+                false, false,
+                "Unsupported custom date format. Use tokens DD, MM, MON, "
+                "MONTH, YY, or YYYY."));
+      }
+    } else if (!setConfiguredDateFormatById(dateFormatId)) {
+      httpd_resp_set_status(req, "400 Bad Request");
+      return sendResponse(
+          req, "application/json",
+          buildRegionalSettingsJson(false, false,
+                                    "Unsupported date format selection."));
+    }
   }
 
   const bool timeZoneChanged =
       timeZoneId.length() > 0 && previousTimeZoneId != getConfiguredTimeZoneId();
-  const bool dateFormatChanged = dateFormatId.length() > 0 &&
-                                 previousDateFormatId !=
-                                     getConfiguredDateFormatId();
+  const bool dateFormatChanged =
+      (dateFormatId.length() > 0 || customDateFormat.length() > 0) &&
+      (previousDateFormatId != getConfiguredDateFormatId() ||
+       previousDateFormatPattern != getConfiguredDateFormatPattern() ||
+       previousDateFormatCustom != isConfiguredDateFormatCustom());
 
   String message;
   if (timeZoneChanged && dateFormatChanged) {
@@ -2568,11 +2692,67 @@ String buildDirectHttpUrl(const String &path) {
   return buildHttpUrlForHost(getIpAddress(), path);
 }
 
+String getHttpsStartupStatusText() {
+  if (serverHandle != nullptr) {
+    return "HTTPS dashboard is available.";
+  }
+
+  return httpsStartupMessage;
+}
+
 void handleHttpRedirect() {
+  if (serverHandle == nullptr) {
+    handleHttpLanding();
+    return;
+  }
+
   const String location = buildHttpsUrl(redirectServer.uri());
   redirectServer.sendHeader("Cache-Control", "no-store, max-age=0");
   redirectServer.sendHeader("Location", location, true);
   redirectServer.send(302, "text/plain", "Redirecting to HTTPS");
+}
+
+void handleHttpStatusJson() {
+  redirectServer.sendHeader("Cache-Control", "no-store, max-age=0");
+  if (serverHandle != nullptr) {
+    const String location = buildHttpsUrl("/api/status");
+    redirectServer.sendHeader("Location", location, true);
+    redirectServer.send(302, "application/json",
+                        "{\"ok\":false,\"message\":\"Redirecting to HTTPS\"}");
+    return;
+  }
+
+  redirectServer.send(200, "application/json", buildStatusJson());
+}
+
+void handleHttpHealthCheck() {
+  redirectServer.sendHeader("Cache-Control", "no-store, max-age=0");
+  if (serverHandle != nullptr) {
+    const String location = buildHttpsUrl("/healthz");
+    redirectServer.sendHeader("Location", location, true);
+    redirectServer.send(302, "text/plain", "Redirecting to HTTPS");
+    return;
+  }
+
+  const String body = String("degraded: ") + getHttpsStartupStatusText();
+  redirectServer.send(503, "text/plain; charset=utf-8", body);
+}
+
+void handleHttpApiUnavailable() {
+  redirectServer.sendHeader("Cache-Control", "no-store, max-age=0");
+  if (serverHandle != nullptr) {
+    const String location = buildHttpsUrl(redirectServer.uri());
+    redirectServer.sendHeader("Location", location, true);
+    redirectServer.send(302, "application/json",
+                        "{\"ok\":false,\"message\":\"Redirecting to HTTPS\"}");
+    return;
+  }
+
+  String body = "{\"ok\":false,\"message\":\"";
+  body += jsonEscape("HTTPS setup is unavailable right now. " +
+                     getHttpsStartupStatusText());
+  body += "\"}";
+  redirectServer.send(503, "application/json", body);
 }
 
 void handleCertDownload() {
@@ -2583,9 +2763,18 @@ void handleCertDownload() {
 }
 
 void handleHttpLanding() {
+  const bool httpsAvailable = serverHandle != nullptr;
   const String preferredHttpsUrl = buildHttpsUrl("/");
   const String preferredSetupUrl = buildHttpsUrl("/setup");
   const String directHttpsUrl = buildDirectHttpsUrl("/");
+  const String httpStatusUrl = buildDirectHttpUrl("/api/status");
+  const String connectionSummary =
+      getConnectionStatusText() + " • " + getIpAssignmentMode() + " • " +
+      getIpAddress();
+  const String boardSummary =
+      "Network: " + getNetworkModeName() + " • Hotspot: " +
+      getConfiguredStationSsid() + " • Bluetooth: " + getBluetoothStatusText();
+  const String httpsStatusMessage = getHttpsStartupStatusText();
 
   String certNotes;
   if (isAccessPointActive() && !isStationConnected()) {
@@ -2612,6 +2801,40 @@ void handleHttpLanding() {
         "<p>If you open the direct IP in HTTPS, your browser may show a "
         "hostname or certificate warning. The .local hostname avoids that when "
         "mDNS is available.</p>";
+  }
+
+  String httpsIntro;
+  String httpsStatusBlock;
+  String actionMarkup;
+  if (httpsAvailable) {
+    httpsIntro =
+        "<p>The secure status dashboard is available at <code>" +
+        htmlEscape(preferredHttpsUrl) + "</code>.</p>"
+        "<p>The secure setup page is available at <code>" +
+        htmlEscape(preferredSetupUrl) + "</code>.</p>";
+    httpsStatusBlock =
+        "<p>HTTPS status: <strong>available</strong>. " +
+        htmlEscape(httpsStatusMessage) + "</p>";
+    actionMarkup =
+        "<a class=\"button primary\" href=\"" + htmlEscape(preferredHttpsUrl) +
+        "\">Open Status Page</a>"
+        "<a class=\"button secondary\" href=\"" +
+        htmlEscape(preferredSetupUrl) + "\">Open Setup Page</a>"
+        "<a class=\"button secondary\" href=\"/cert.pem\">Download Certificate</a>";
+  } else {
+    httpsIntro =
+        "<p>The secure dashboard is not available right now. This HTTP page "
+        "stays online as a recovery console while the board keeps retrying "
+        "HTTPS startup automatically.</p>"
+        "<p>Last HTTPS status: <code>" + htmlEscape(httpsStatusMessage) +
+        "</code>.</p>";
+    httpsStatusBlock =
+        "<p>Recovery API: <code>" + htmlEscape(httpStatusUrl) +
+        "</code> returns live board status over HTTP until HTTPS recovers.</p>";
+    actionMarkup =
+        "<a class=\"button primary\" href=\"/\">Refresh Recovery Page</a>"
+        "<a class=\"button secondary\" href=\"/api/status\">Open HTTP Status API</a>"
+        "<a class=\"button secondary\" href=\"/cert.pem\">Download Certificate</a>";
   }
 
   String page = R"HTML(
@@ -2694,26 +2917,29 @@ void handleHttpLanding() {
 <body>
   <main class="card">
     <h1>HTTPS Setup</h1>
-    <p>The secure status dashboard is available at <code>__PREFERRED_HTTPS_URL__</code>.</p>
-    <p>The secure setup page is available at <code>__PREFERRED_SETUP_URL__</code>.</p>
+    __HTTPS_INTRO__
+    <p>Board state: <code>__CONNECTION_SUMMARY__</code>.</p>
+    <p>__BOARD_SUMMARY__</p>
+    __HTTPS_STATUS_BLOCK__
     <p>__CERT_NOTES__</p>
     __DIRECT_IP_DETAILS__
     <p>The status page shows live board and API details, while the setup page handles Wi-Fi, IP, regional, and Bluetooth controls.</p>
     <p>If your browser rejects the TLS handshake, download the certificate, trust it on your device, then open the HTTPS URL again.</p>
     <div class="actions">
-      <a class="button primary" href="__PREFERRED_HTTPS_URL__">Open Status Page</a>
-      <a class="button secondary" href="__PREFERRED_SETUP_URL__">Open Setup Page</a>
-      <a class="button secondary" href="/cert.pem">Download Certificate</a>
+      __ACTION_MARKUP__
     </div>
   </main>
 </body>
 </html>
 )HTML";
 
-  page.replace("__PREFERRED_HTTPS_URL__", htmlEscape(preferredHttpsUrl));
-  page.replace("__PREFERRED_SETUP_URL__", htmlEscape(preferredSetupUrl));
+  page.replace("__HTTPS_INTRO__", httpsIntro);
+  page.replace("__CONNECTION_SUMMARY__", htmlEscape(connectionSummary));
+  page.replace("__BOARD_SUMMARY__", htmlEscape(boardSummary));
+  page.replace("__HTTPS_STATUS_BLOCK__", httpsStatusBlock);
   page.replace("__CERT_NOTES__", htmlEscape(certNotes));
   page.replace("__DIRECT_IP_DETAILS__", directIpDetails);
+  page.replace("__ACTION_MARKUP__", actionMarkup);
   redirectServer.sendHeader("Cache-Control", "no-store, max-age=0");
   redirectServer.send(200, "text/html; charset=utf-8", page);
 }
@@ -2739,7 +2965,7 @@ bool registerPostHandler(const char *uri,
 }
 
 void maybeStartMdns() {
-  if (mdnsStarted || !isStationConnected()) {
+  if (mdnsStarted || serverHandle == nullptr || !isStationConnected()) {
     return;
   }
 
@@ -2792,7 +3018,7 @@ void printAccessUrls() {
 }
 
 void maybePrintAccessUrls() {
-  if (!isNetworkReady()) {
+  if (serverHandle == nullptr || !isNetworkReady()) {
     lastAnnouncedIpAddress = "";
     lastAnnouncedMdnsStarted = false;
     lastAnnouncedStationConnected = false;
@@ -2822,12 +3048,37 @@ void maybePrintAccessUrls() {
   printAccessUrls();
 }
 
-}  // namespace
-
-void initializeStatusServer() {
-  if (serverHandle != nullptr) {
+void ensureHttpBootstrapServer() {
+  if (redirectServerStarted) {
     return;
   }
+
+  redirectServer.on("/", handleHttpLanding);
+  redirectServer.on("/setup", handleHttpRedirect);
+  redirectServer.on("/secure", handleHttpRedirect);
+  redirectServer.on("/cert.pem", handleCertDownload);
+  redirectServer.on("/api/status", handleHttpStatusJson);
+  redirectServer.on("/api/regional/settings", handleHttpApiUnavailable);
+  redirectServer.on("/api/network/scan", handleHttpApiUnavailable);
+  redirectServer.on("/api/bluetooth/scan", handleHttpApiUnavailable);
+  redirectServer.on("/healthz", handleHttpHealthCheck);
+  redirectServer.onNotFound(handleHttpLanding);
+  redirectServer.begin();
+  redirectServerStarted = true;
+  Serial.println("HTTP bootstrap server started on port 80.");
+}
+
+bool ensureHttpsServerStarted() {
+  if (serverHandle != nullptr) {
+    return true;
+  }
+
+  const unsigned long nowMs = millis();
+  if (lastHttpsStartAttemptMs != 0 &&
+      nowMs - lastHttpsStartAttemptMs < kHttpsStartRetryMs) {
+    return false;
+  }
+  lastHttpsStartAttemptMs = nowMs;
 
   httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
   config.port_secure = AppConfig::kStatusServerPort;
@@ -2842,12 +3093,15 @@ void initializeStatusServer() {
 
   const esp_err_t startResult = httpd_ssl_start(&serverHandle, &config);
   if (startResult != ESP_OK) {
+    httpsStartupMessage =
+        String("HTTPS start failed: ") + esp_err_to_name(startResult);
     Serial.printf("Failed to start HTTPS status server: %s\n",
                   esp_err_to_name(startResult));
     serverHandle = nullptr;
-    return;
+    return false;
   }
 
+  httpsStartupMessage = "HTTPS status server started successfully.";
   Serial.printf("HTTPS status server started on port %u.\n",
                 AppConfig::kStatusServerPort);
 
@@ -2885,21 +3139,9 @@ void initializeStatusServer() {
       !ipConfigRegistered || !regionalUpdateRegistered ||
       !bluetoothConnectRegistered || !bluetoothDisconnectRegistered) {
     Serial.println("HTTPS setup server started, but not all routes registered.");
+    httpsStartupMessage =
+        "HTTPS started, but not all dashboard routes registered correctly.";
   }
-
-  redirectServer.on("/", handleHttpLanding);
-  redirectServer.on("/setup", handleHttpRedirect);
-  redirectServer.on("/secure", handleHttpRedirect);
-  redirectServer.on("/cert.pem", handleCertDownload);
-  redirectServer.on("/api/status", handleHttpRedirect);
-  redirectServer.on("/api/regional/settings", handleHttpRedirect);
-  redirectServer.on("/api/network/scan", handleHttpRedirect);
-  redirectServer.on("/api/bluetooth/scan", handleHttpRedirect);
-  redirectServer.on("/healthz", handleHttpRedirect);
-  redirectServer.onNotFound(handleHttpLanding);
-  redirectServer.begin();
-  redirectServerStarted = true;
-  Serial.println("HTTP bootstrap server started on port 80.");
 
   maybeStartMdns();
 
@@ -2910,11 +3152,21 @@ void initializeStatusServer() {
         "HTTPS setup server started on port %u, but no network is active yet.\n",
         AppConfig::kStatusServerPort);
   }
+
+  return true;
+}
+
+}  // namespace
+
+void initializeStatusServer() {
+  ensureHttpBootstrapServer();
+  ensureHttpsServerStarted();
 }
 
 void handleStatusServer() {
+  ensureHttpBootstrapServer();
   if (serverHandle == nullptr) {
-    return;
+    ensureHttpsServerStarted();
   }
 
   maybeStartMdns();

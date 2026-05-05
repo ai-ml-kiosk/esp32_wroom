@@ -4,6 +4,7 @@
 #include "BluetoothManager.h"
 #include "Connectivity.h"
 #include "Heartbeat.h"
+#include "PowerMonitor.h"
 #include "RegionalSettings.h"
 #include "StatusDisplay.h"
 #include "StatusServer.h"
@@ -17,6 +18,7 @@ void setupApplication() {
 
   initializeRegionalSettings();
   initializeHeartbeat();
+  initializePowerMonitor();
   initializeStatusDisplay();
   initializeBluetoothManager();
   connectWiFi();
@@ -27,6 +29,7 @@ void runApplication() {
   updateConnectivity();
   updateBluetoothManager();
   updateHeartbeat();
+  updatePowerMonitor();
   updateStatusDisplay();
   handleStatusServer();
 }
