@@ -10,6 +10,7 @@
 
 #include "AppConfig.h"
 #include "BluetoothManager.h"
+#include "Connectivity.h"
 
 namespace {
 
@@ -233,7 +234,8 @@ bool ensureBluetoothInitializedForWorker(String *message) {
   }
 
   if (!NimBLEDevice::isInitialized()) {
-    const bool initialized = NimBLEDevice::init(AppConfig::kStatusHostName);
+    const String deviceName = getStationHostName();
+    const bool initialized = NimBLEDevice::init(deviceName.c_str());
     if (!initialized) {
       if (lockBluetoothState()) {
         bluetoothInitialized = true;

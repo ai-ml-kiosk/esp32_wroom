@@ -12,6 +12,7 @@
 #include "BluetoothManager.h"
 #include "Connectivity.h"
 #include "Heartbeat.h"
+#include "ManageSDCard.h"
 #include "PowerMonitor.h"
 #include "RegionalSettings.h"
 #include "StatusServer.h"
@@ -41,9 +42,14 @@ String buildDirectHttpsUrl(const String &path);
 String buildHttpsUrl(const String &path);
 String buildHttpUrlForHost(const String &host, const String &path);
 String buildDirectHttpUrl(const String &path);
+String getStationMdnsHostName();
 bool ensureHttpsServerStarted();
 void ensureHttpBootstrapServer();
 void handleHttpLanding();
+
+String getSDCardPageUrl() { return buildHttpsUrl("/sd"); }
+
+String getStationMdnsHostName() { return getStationHostName() + ".local"; }
 
 String jsonEscape(const String &value) {
   String escaped;
@@ -114,6 +120,13 @@ String formatUptime(const unsigned long uptimeMs) {
   char buffer[32];
   snprintf(buffer, sizeof(buffer), "%lud %02lu:%02lu:%02lu", days, hours,
            minutes, seconds);
+  return String(buffer);
+}
+
+String formatUnsignedLongLong(const uint64_t value) {
+  char buffer[24];
+  snprintf(buffer, sizeof(buffer), "%llu",
+           static_cast<unsigned long long>(value));
   return String(buffer);
 }
 
@@ -237,6 +250,86 @@ String buildDateFormatOptionsJsonArray() {
   return json;
 }
 
+String buildSDCardInfoJsonFields() {
+  const SDCardInfo info = getSDCardInfo();
+  String json;
+  json.reserve(760);
+  json += "\"sdCardEnabled\":";
+  json += info.enabled ? "true," : "false,";
+  json += "\"sdCardMounted\":";
+  json += info.mounted ? "true," : "false,";
+  json += "\"sdCardStatus\":\"" + jsonEscape(info.status) + "\",";
+  json += "\"sdCardMountState\":\"" + jsonEscape(info.mountState) + "\",";
+  json += "\"sdCardType\":\"" + jsonEscape(info.cardType) + "\",";
+  json += "\"sdCardTotalBytes\":" + formatUnsignedLongLong(info.totalBytes) +
+          ",";
+  json += "\"sdCardUsedBytes\":" + formatUnsignedLongLong(info.usedBytes) + ",";
+  json += "\"sdCardFreeBytes\":" +
+          formatUnsignedLongLong(info.totalBytes > info.usedBytes
+                                     ? info.totalBytes - info.usedBytes
+                                     : 0) +
+          ",";
+  json += "\"sdCardCsPin\":" + String(info.csPin) + ",";
+  json += "\"sdCardSckPin\":" + String(info.sckPin) + ",";
+  json += "\"sdCardMisoPin\":" + String(info.misoPin) + ",";
+  json += "\"sdCardMosiPin\":" + String(info.mosiPin);
+  return json;
+}
+
+String buildSDCardStatusJson(const bool ok, const String &message) {
+  String json;
+  json.reserve(900);
+  json += "{";
+  json += "\"ok\":";
+  json += ok ? "true," : "false,";
+  json += buildSDCardInfoJsonFields();
+  json += ",";
+  json += "\"sdCardPageUrl\":\"" + jsonEscape(getSDCardPageUrl()) + "\",";
+  json += "\"sdCardStatusApi\":\"GET /api/sd/status\",";
+  json += "\"sdCardListApi\":\"GET /api/sd/list?path=/\",";
+  json += "\"sdCardDownloadApi\":\"GET /api/sd/download?path=/file\",";
+  json += "\"sdCardMountApi\":\"POST /api/sd/mount\",";
+  json += "\"sdCardEjectApi\":\"POST /api/sd/eject\",";
+  json += "\"message\":\"" + jsonEscape(message) + "\"";
+  json += "}";
+  return json;
+}
+
+String buildSDCardDirectoryJson(const bool ok, const String &path,
+                                const std::vector<SDCardEntry> &entries,
+                                const String &message) {
+  String json;
+  json.reserve(1000 + entries.size() * 160);
+  json += "{";
+  json += "\"ok\":";
+  json += ok ? "true," : "false,";
+  json += buildSDCardInfoJsonFields();
+  json += ",";
+  json += "\"path\":\"" + jsonEscape(path) + "\",";
+  json += "\"count\":" + String(entries.size()) + ",";
+  json += "\"message\":\"" + jsonEscape(message) + "\",";
+  json += "\"entries\":[";
+
+  for (size_t index = 0; index < entries.size(); ++index) {
+    const SDCardEntry &entry = entries[index];
+    if (index > 0) {
+      json += ",";
+    }
+
+    json += "{";
+    json += "\"name\":\"" + jsonEscape(entry.name) + "\",";
+    json += "\"path\":\"" + jsonEscape(entry.path) + "\",";
+    json += "\"directory\":";
+    json += entry.directory ? "true," : "false,";
+    json += "\"sizeBytes\":" + formatUnsignedLongLong(entry.sizeBytes);
+    json += "}";
+  }
+
+  json += "]";
+  json += "}";
+  return json;
+}
+
 String buildRegionalSettingsJson(const bool ok, const bool includeOptions,
                                  const String &message) {
   String json;
@@ -270,16 +363,17 @@ String buildStatusJson() {
   const String setupUrl = buildHttpsUrl("/setup");
   const String httpBootstrapUrl = buildDirectHttpUrl("/");
   const String apiBaseUrl = buildHttpsUrlForHost(
-      (stationConnected && mdnsStarted)
-          ? String(AppConfig::kStatusHostName) + ".local"
-          : getIpAddress(),
+      (stationConnected && mdnsStarted) ? getStationMdnsHostName()
+                                        : getIpAddress(),
       "");
   const String statusApiUrl = buildHttpsUrl("/api/status");
   const String healthUrl = buildHttpsUrl("/healthz");
   const String regionalSettingsUrl = buildHttpsUrl("/api/regional/settings");
+  const String sdCardPageUrl = buildHttpsUrl("/sd");
+  const String sdCardStatusUrl = buildHttpsUrl("/api/sd/status");
 
   String json;
-  json.reserve(3600);
+  json.reserve(4600);
 
   json += "{";
   json += "\"device\":\"" + jsonEscape(ESP.getChipModel()) + "\",";
@@ -288,7 +382,7 @@ String buildStatusJson() {
   json += "\"applicationCapabilities\":\"" +
           jsonEscape(
               "Wi-Fi setup, fixed or dynamic IP, Bluetooth LE status, and "
-              "regional settings") +
+              "regional settings, plus SD card browsing when available") +
           "\",";
   json += "\"dashboardUrl\":\"" + jsonEscape(dashboardUrl) + "\",";
   json += "\"setupUrl\":\"" + jsonEscape(setupUrl) + "\",";
@@ -301,12 +395,18 @@ String buildStatusJson() {
   json += "\"regionalApi\":\"GET/POST /api/regional/settings\",";
   json += "\"regionalSettingsUrl\":\"" + jsonEscape(regionalSettingsUrl) +
           "\",";
+  json += "\"sdCardPageUrl\":\"" + jsonEscape(sdCardPageUrl) + "\",";
+  json += "\"sdCardStatusUrl\":\"" + jsonEscape(sdCardStatusUrl) + "\",";
   json +=
       "\"networkApi\":\"GET /api/network/scan | POST /api/network/connect | "
       "POST /api/network/ip-mode | POST /api/network/ip-config\",";
   json +=
       "\"bluetoothApi\":\"GET/POST /api/bluetooth/scan | POST "
       "/api/bluetooth/connect | POST /api/bluetooth/disconnect\",";
+  json +=
+      "\"sdCardApi\":\"GET /api/sd/status | GET /api/sd/list?path=/ | GET "
+      "/api/sd/download?path=/file | POST /api/sd/mount | POST "
+      "/api/sd/eject\",";
   json += "\"refreshIntervalMs\":" + String(AppConfig::kStatusRefreshMs) + ",";
   json += "\"uptimeMs\":" + String(uptimeMs) + ",";
   json += "\"uptime\":\"" + jsonEscape(formatUptime(uptimeMs)) + "\",";
@@ -328,6 +428,8 @@ String buildStatusJson() {
   json += ",";
   json += "\"powerVoltageLabel\":\"" +
           jsonEscape(getPowerVoltageLabel()) + "\",";
+  json += buildSDCardInfoJsonFields();
+  json += ",";
   json += buildRegionalStatusJsonFields();
   json += "\"networkMode\":\"" + jsonEscape(getNetworkModeName()) + "\",";
   json += "\"connectionStatus\":\"" + jsonEscape(getConnectionStatusText()) +
@@ -335,6 +437,8 @@ String buildStatusJson() {
   json += "\"ssid\":\"" + jsonEscape(getNetworkName()) + "\",";
   json += "\"configuredStationSsid\":\"" +
           jsonEscape(getConfiguredStationSsid()) + "\",";
+  json += "\"stationHostName\":\"" + jsonEscape(getStationHostName()) + "\",";
+  json += "\"mdnsHostName\":\"" + jsonEscape(getStationMdnsHostName()) + "\",";
   json += "\"ipMode\":\"" + jsonEscape(getIpAssignmentMode()) + "\",";
   json += "\"staticStationIpEnabled\":";
   json += staticIpEnabled ? "true," : "false,";
@@ -517,6 +621,66 @@ bool getFormField(const String &body, const char *key, String *value) {
   }
 
   return false;
+}
+
+String getQueryField(httpd_req_t *req, const char *key,
+                     const String &fallback = "") {
+  const size_t queryLength = httpd_req_get_url_query_len(req) + 1;
+  if (queryLength <= 1) {
+    return fallback;
+  }
+
+  std::vector<char> query(queryLength);
+  if (httpd_req_get_url_query_str(req, query.data(), query.size()) != ESP_OK) {
+    return fallback;
+  }
+
+  char value[192];
+  if (httpd_query_key_value(query.data(), key, value, sizeof(value)) !=
+      ESP_OK) {
+    return fallback;
+  }
+
+  return urlDecode(String(value));
+}
+
+String getContentTypeForPath(const String &path) {
+  String lowerPath = path;
+  lowerPath.toLowerCase();
+
+  if (lowerPath.endsWith(".html") || lowerPath.endsWith(".htm")) {
+    return "text/html; charset=utf-8";
+  }
+  if (lowerPath.endsWith(".css")) {
+    return "text/css; charset=utf-8";
+  }
+  if (lowerPath.endsWith(".js")) {
+    return "application/javascript";
+  }
+  if (lowerPath.endsWith(".json")) {
+    return "application/json";
+  }
+  if (lowerPath.endsWith(".txt") || lowerPath.endsWith(".log") ||
+      lowerPath.endsWith(".csv") || lowerPath.endsWith(".md")) {
+    return "text/plain; charset=utf-8";
+  }
+  if (lowerPath.endsWith(".png")) {
+    return "image/png";
+  }
+  if (lowerPath.endsWith(".jpg") || lowerPath.endsWith(".jpeg")) {
+    return "image/jpeg";
+  }
+  if (lowerPath.endsWith(".gif")) {
+    return "image/gif";
+  }
+  if (lowerPath.endsWith(".svg")) {
+    return "image/svg+xml";
+  }
+  if (lowerPath.endsWith(".pdf")) {
+    return "application/pdf";
+  }
+
+  return "application/octet-stream";
 }
 
 bool parseIpField(const String &body, const char *key,
@@ -972,6 +1136,7 @@ esp_err_t handleDashboard(httpd_req_t *req) {
       <span class="pill warn" id="connectionPill">Checking board state</span>
       <div class="actions">
         <a class="button primary" href="/setup">Open Setup</a>
+        <a class="button secondary" href="/sd">SD Card</a>
         <a class="button secondary" href="/api/status">Status API</a>
         <a class="button secondary" href="/healthz">Health</a>
       </div>
@@ -988,6 +1153,7 @@ esp_err_t handleDashboard(httpd_req_t *req) {
           <div class="row"><dt>CPU</dt><dd id="cpu">-</dd></div>
           <div class="row"><dt>Flash</dt><dd id="flash">-</dd></div>
           <div class="row"><dt>Voltage</dt><dd id="powerVoltage">-</dd></div>
+          <div class="row"><dt>SD Card</dt><dd id="sdCardStatus">-</dd></div>
           <div class="row"><dt>SDK</dt><dd id="sdkVersion">-</dd></div>
           <div class="row"><dt>Heartbeat</dt><dd id="heartbeatState">-</dd></div>
         </dl>
@@ -1024,6 +1190,7 @@ esp_err_t handleDashboard(httpd_req_t *req) {
           <div class="row"><dt>Console</dt><dd id="applicationName">-</dd></div>
           <div class="row"><dt>HTTPS Dashboard</dt><dd id="dashboardUrl" class="mono">-</dd></div>
           <div class="row"><dt>Setup Page</dt><dd id="setupUrl" class="mono">-</dd></div>
+          <div class="row"><dt>SD Card Page</dt><dd id="sdCardPageUrl" class="mono">-</dd></div>
           <div class="row"><dt>HTTP Bootstrap</dt><dd id="httpBootstrapUrl" class="mono">-</dd></div>
           <div class="row"><dt>Clock</dt><dd id="localClock">-</dd></div>
           <div class="row"><dt>Regional</dt><dd id="regionalSummary">-</dd></div>
@@ -1041,6 +1208,7 @@ esp_err_t handleDashboard(httpd_req_t *req) {
           <div class="row"><dt>Regional</dt><dd id="regionalApi" class="mono">-</dd></div>
           <div class="row"><dt>Network</dt><dd id="networkApi" class="mono">-</dd></div>
           <div class="row"><dt>Bluetooth</dt><dd id="bluetoothApi" class="mono">-</dd></div>
+          <div class="row"><dt>SD Card</dt><dd id="sdCardApi" class="mono">-</dd></div>
         </dl>
       </article>
     </section>
@@ -1147,6 +1315,7 @@ esp_err_t handleDashboard(httpd_req_t *req) {
       setText('applicationName', data.applicationName);
       setLink('dashboardUrl', data.dashboardUrl);
       setLink('setupUrl', data.setupUrl);
+      setLink('sdCardPageUrl', data.sdCardPageUrl);
       setLink('httpBootstrapUrl', data.httpBootstrapUrl);
       setText(
         'localClock',
@@ -1172,6 +1341,7 @@ esp_err_t handleDashboard(httpd_req_t *req) {
       setText('regionalApi', data.regionalApi);
       setText('networkApi', data.networkApi);
       setText('bluetoothApi', data.bluetoothApi);
+      setText('sdCardApi', data.sdCardApi);
 
       setText('statusDeviceName', data.device);
       setText('chipRevision', data.chipRevision);
@@ -1180,6 +1350,12 @@ esp_err_t handleDashboard(httpd_req_t *req) {
       setText('cpu', safeText(data.cpuMHz, '-') + ' MHz');
       setText('flash', formatBytes(data.flashBytes));
       setText('powerVoltage', data.powerVoltageLabel, 'Unavailable');
+      setText(
+        'sdCardStatus',
+        data.sdCardMounted
+          ? (safeText(data.sdCardType, 'Mounted') + ' • ' + formatBytes(data.sdCardUsedBytes) + ' / ' + formatBytes(data.sdCardTotalBytes))
+          : safeText(data.sdCardStatus, 'Not mounted')
+      );
       setText('sdkVersion', data.sdkVersion);
       setText(
         'heartbeatState',
@@ -1601,6 +1777,7 @@ esp_err_t handleSetupPage(httpd_req_t *req) {
       <p class="summary" id="setupSummary">Loading the current network and setup state...</p>
       <div class="actions">
         <a class="button primary" href="/" id="backToStatusLink">Back to Status</a>
+        <a class="button secondary" href="/sd">SD Card</a>
         <a class="button secondary" href="/api/status">Status API</a>
       </div>
     </section>
@@ -1713,7 +1890,7 @@ esp_err_t handleSetupPage(httpd_req_t *req) {
 
   <script>
     const refreshMs = 5000;
-    const preferredHostName = 'esp32-status.local';
+    let preferredHostName = 'esp32-status.local';
     let ipModeChangeInFlight = false;
     let formsHydrated = false;
     let bluetoothScanInFlight = false;
@@ -1995,6 +2172,7 @@ esp_err_t handleSetupPage(httpd_req_t *req) {
         hydrateForms(data);
       }
 
+      preferredHostName = safeText(data.mdnsHostName, preferredHostName);
       byId('setupSummary').textContent =
         safeText(data.connectionStatus, '-') + ' • ' +
         safeText(data.ipAddress, '-') + ' • ' +
@@ -2301,9 +2479,776 @@ esp_err_t handleSetupPage(httpd_req_t *req) {
   return sendChunkedResponse(req, "text/html; charset=utf-8", page);
 }
 
+esp_err_t handleSDCardPage(httpd_req_t *req) {
+  static const char page[] = R"HTML(
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ESP32 SD Card</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --surface: rgba(255, 252, 247, 0.92);
+      --ink: #16202b;
+      --muted: #5f6874;
+      --accent: #0f766e;
+      --accent-soft: rgba(15, 118, 110, 0.14);
+      --warn: #b45309;
+      --warn-soft: rgba(180, 83, 9, 0.14);
+      --info-soft: rgba(22, 32, 43, 0.06);
+      --border: rgba(22, 32, 43, 0.1);
+      --shadow: 0 18px 42px rgba(22, 32, 43, 0.1);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Avenir Next", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(15, 118, 110, 0.16), transparent 32%),
+        linear-gradient(180deg, #f8f3eb 0%, #ede3d6 100%);
+    }
+
+    .shell {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 24px 16px 32px;
+    }
+
+    .hero,
+    .card {
+      border-radius: 20px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      padding: 24px;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      font-size: 0.78rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.9rem, 4vw, 3rem);
+      line-height: 1;
+    }
+
+    .summary,
+    .note {
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .summary {
+      margin: 12px 0 0;
+    }
+
+    .actions,
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .button,
+    a.button,
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 42px;
+      padding: 0 14px;
+      border-radius: 999px;
+      border: 0;
+      font: inherit;
+      font-weight: 700;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .button.primary,
+    button {
+      color: white;
+      background: var(--accent);
+      box-shadow: 0 10px 20px rgba(15, 118, 110, 0.18);
+    }
+
+    .button.secondary,
+    button.secondary {
+      color: var(--ink);
+      background: rgba(22, 32, 43, 0.08);
+      box-shadow: none;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+      margin-top: 18px;
+      grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.6fr);
+    }
+
+    .card {
+      padding: 20px;
+    }
+
+    .card h2 {
+      margin: 0 0 12px;
+      font-size: 1rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    dl {
+      margin: 0;
+      display: grid;
+      gap: 10px;
+    }
+
+    .row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid rgba(22, 32, 43, 0.08);
+    }
+
+    .row:last-child {
+      border-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    dt {
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    dd {
+      margin: 0;
+      text-align: right;
+      font-weight: 700;
+      word-break: break-word;
+    }
+
+    .path-row {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: 1fr auto auto;
+      align-items: center;
+    }
+
+    input {
+      width: 100%;
+      min-height: 42px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(22, 32, 43, 0.14);
+      background: rgba(255, 255, 255, 0.82);
+      color: var(--ink);
+      font: inherit;
+    }
+
+    input:focus {
+      outline: 2px solid rgba(15, 118, 110, 0.28);
+      border-color: rgba(15, 118, 110, 0.35);
+    }
+
+    .banner {
+      display: none;
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-radius: 16px;
+      font-size: 0.94rem;
+      line-height: 1.45;
+    }
+
+    .banner.info,
+    .banner.ok,
+    .banner.warn {
+      display: block;
+    }
+
+    .banner.info {
+      background: var(--info-soft);
+      color: var(--ink);
+    }
+
+    .banner.ok {
+      background: var(--accent-soft);
+      color: #0d5c57;
+    }
+
+    .banner.warn {
+      background: var(--warn-soft);
+      color: #8a4a09;
+    }
+
+    .file-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .file-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.68);
+      border: 1px solid rgba(22, 32, 43, 0.08);
+    }
+
+    .file-main {
+      min-width: 0;
+    }
+
+    .file-title {
+      margin: 0;
+      font-weight: 700;
+      word-break: break-word;
+    }
+
+    .file-meta {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+
+    .empty {
+      margin: 0;
+      padding: 14px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.54);
+      border: 1px dashed rgba(22, 32, 43, 0.16);
+      color: var(--muted);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 16px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      font-weight: 700;
+    }
+
+    .pill::before {
+      content: "";
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: currentColor;
+      opacity: 0.8;
+    }
+
+    .pill.ok {
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .pill.warn {
+      color: var(--warn);
+      background: var(--warn-soft);
+    }
+
+    a {
+      color: var(--accent);
+    }
+
+    .mono {
+      font-family: "SFMono-Regular", "Consolas", monospace;
+      font-size: 0.92rem;
+    }
+
+    .footer {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 0.92rem;
+      text-align: right;
+    }
+
+    @media (max-width: 820px) {
+      .shell {
+        padding: 16px 14px 24px;
+      }
+
+      .hero,
+      .card {
+        padding: 18px;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .path-row,
+      .file-item,
+      .row {
+        grid-template-columns: 1fr;
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      dd {
+        text-align: left;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <p class="eyebrow">ESP32 SD Card</p>
+      <h1>SD Card Manager</h1>
+      <p class="summary" id="sdSummary">Loading SD card state...</p>
+      <span class="pill warn" id="sdPill">SD card idle</span>
+      <div class="actions">
+        <a class="button primary" href="/">Back to Status</a>
+        <a class="button secondary" href="/setup">Setup</a>
+        <a class="button secondary" href="/api/sd/status">SD API</a>
+      </div>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Card</h2>
+        <dl>
+          <div class="row"><dt>Mounted</dt><dd id="mountedState">-</dd></div>
+          <div class="row"><dt>Mount State</dt><dd id="mountState">-</dd></div>
+          <div class="row"><dt>Type</dt><dd id="cardType">-</dd></div>
+          <div class="row"><dt>Used</dt><dd id="usedBytes">-</dd></div>
+          <div class="row"><dt>Free</dt><dd id="freeBytes">-</dd></div>
+          <div class="row"><dt>Total</dt><dd id="totalBytes">-</dd></div>
+          <div class="row"><dt>SPI Pins</dt><dd id="spiPins" class="mono">-</dd></div>
+          <div class="row"><dt>Status</dt><dd id="statusDetail">-</dd></div>
+        </dl>
+        <div class="button-row">
+          <button id="readCardButton" type="button">Read Card</button>
+          <button class="secondary" id="ejectCardButton" type="button">Eject Card</button>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>Files</h2>
+        <div class="path-row">
+          <input id="pathInput" class="mono" autocomplete="off" value="/" spellcheck="false">
+          <button id="openPathButton" type="button">Open</button>
+          <button class="secondary" id="upButton" type="button">Up</button>
+        </div>
+        <div class="banner" id="sdBanner"></div>
+        <div class="file-list" id="fileList">
+          <p class="empty">Loading files...</p>
+        </div>
+      </article>
+    </section>
+
+    <p class="footer">Last updated <span id="lastUpdated">never</span></p>
+  </main>
+
+  <script>
+    let currentPath = '/';
+
+    function byId(id) {
+      return document.getElementById(id);
+    }
+
+    function safeText(value, fallback) {
+      if (value === null || value === undefined || value === '') {
+        return fallback;
+      }
+
+      return String(value);
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function formatBytes(value) {
+      if (typeof value !== 'number' || Number.isNaN(value)) {
+        return 'n/a';
+      }
+
+      const units = ['B', 'KB', 'MB', 'GB'];
+      let size = value;
+      let index = 0;
+      while (size >= 1024 && index < units.length - 1) {
+        size /= 1024;
+        index += 1;
+      }
+      const digits = size >= 10 || index === 0 ? 0 : 1;
+      return size.toFixed(digits) + ' ' + units[index];
+    }
+
+    function setBanner(text, type) {
+      const element = byId('sdBanner');
+      element.className = 'banner';
+      element.textContent = text || '';
+      if (text) {
+        element.classList.add(type || 'info');
+      }
+    }
+
+    function setText(id, value, fallback) {
+      byId(id).textContent = safeText(value, fallback || '-');
+    }
+
+    function setPill(data) {
+      const element = byId('sdPill');
+      element.classList.remove('ok', 'warn');
+      element.classList.add(data.sdCardMounted ? 'ok' : 'warn');
+      if (data.sdCardMounted) {
+        element.textContent = 'SD card mounted';
+      } else if (data.sdCardMountState === 'Ejected') {
+        element.textContent = 'SD card ejected';
+      } else {
+        element.textContent = 'SD card idle';
+      }
+    }
+
+    async function fetchJson(url, options) {
+      const response = await fetch(url, options || {});
+      const data = await response.json();
+      if (!response.ok || (Object.prototype.hasOwnProperty.call(data, 'ok') && !data.ok)) {
+        const error = new Error(data.message || ('HTTP ' + response.status));
+        error.data = data;
+        throw error;
+      }
+      return data;
+    }
+
+    async function postForm(url, values) {
+      return fetchJson(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body: new URLSearchParams(values || {}).toString()
+      });
+    }
+
+    function parentPath(path) {
+      if (!path || path === '/') {
+        return '/';
+      }
+
+      const trimmed = path.endsWith('/') && path.length > 1 ? path.slice(0, -1) : path;
+      const slash = trimmed.lastIndexOf('/');
+      return slash <= 0 ? '/' : trimmed.slice(0, slash);
+    }
+
+    function updateStatus(data) {
+      const freeBytes = Math.max(0, (data.sdCardTotalBytes || 0) - (data.sdCardUsedBytes || 0));
+      setPill(data);
+      byId('sdSummary').textContent = data.sdCardMounted
+        ? (safeText(data.sdCardType, 'Mounted') + ' • ' + formatBytes(data.sdCardUsedBytes) + ' used of ' + formatBytes(data.sdCardTotalBytes))
+        : safeText(data.sdCardStatus, 'SD card not mounted');
+      setText('mountedState', data.sdCardMounted ? 'Yes' : 'No');
+      setText('mountState', data.sdCardMountState);
+      setText('cardType', data.sdCardType);
+      setText('usedBytes', formatBytes(data.sdCardUsedBytes));
+      setText('freeBytes', formatBytes(freeBytes));
+      setText('totalBytes', formatBytes(data.sdCardTotalBytes));
+      setText('spiPins', 'CS ' + data.sdCardCsPin + ' • SCK ' + data.sdCardSckPin + ' • MISO ' + data.sdCardMisoPin + ' • MOSI ' + data.sdCardMosiPin);
+      setText('statusDetail', data.sdCardStatus);
+      byId('readCardButton').disabled = !data.sdCardEnabled;
+      byId('ejectCardButton').disabled = !data.sdCardMounted;
+      byId('openPathButton').disabled = !data.sdCardMounted;
+      byId('upButton').disabled = !data.sdCardMounted;
+      byId('lastUpdated').textContent = new Date().toLocaleTimeString();
+    }
+
+    function renderEntries(entries) {
+      const container = byId('fileList');
+      const rows = [];
+
+      if (currentPath !== '/') {
+        rows.push(
+          '<div class="file-item">' +
+            '<div class="file-main">' +
+              '<p class="file-title">..</p>' +
+              '<p class="file-meta">Parent folder</p>' +
+            '</div>' +
+            '<button class="secondary" type="button" data-role="open-dir" data-path="' + encodeURIComponent(parentPath(currentPath)) + '">Open</button>' +
+          '</div>'
+        );
+      }
+
+      (entries || []).forEach(function (entry) {
+        const encodedPath = encodeURIComponent(entry.path);
+        const action = entry.directory
+          ? '<button class="secondary" type="button" data-role="open-dir" data-path="' + encodedPath + '">Open</button>'
+          : '<a class="button secondary" href="/api/sd/download?path=' + encodedPath + '">Download</a>';
+
+        rows.push(
+          '<div class="file-item">' +
+            '<div class="file-main">' +
+              '<p class="file-title">' + escapeHtml(entry.name) + '</p>' +
+              '<p class="file-meta">' + (entry.directory ? 'Folder' : formatBytes(entry.sizeBytes)) + ' • ' + escapeHtml(entry.path) + '</p>' +
+            '</div>' +
+            action +
+          '</div>'
+        );
+      });
+
+      if (!rows.length) {
+        container.innerHTML = '<p class="empty">This folder is empty.</p>';
+      } else {
+        container.innerHTML = rows.join('');
+      }
+
+      Array.prototype.forEach.call(
+        container.querySelectorAll('button[data-role="open-dir"]'),
+        function (button) {
+          button.addEventListener('click', function () {
+            loadDirectory(decodeURIComponent(button.dataset.path || '/'));
+          });
+        }
+      );
+    }
+
+    async function loadDirectory(path) {
+      const requestedPath = path || '/';
+      setBanner('Loading ' + requestedPath + '...', 'info');
+
+      try {
+        const data = await fetchJson('/api/sd/list?path=' + encodeURIComponent(requestedPath), { cache: 'no-store' });
+        updateStatus(data);
+        currentPath = data.path || requestedPath;
+        byId('pathInput').value = currentPath;
+        renderEntries(data.entries || []);
+        setBanner(data.message, 'ok');
+      } catch (error) {
+        if (error.data) {
+          updateStatus(error.data);
+        } else {
+          try {
+            updateStatus(await fetchJson('/api/sd/status', { cache: 'no-store' }));
+          } catch (_) {
+          }
+        }
+
+        byId('fileList').innerHTML = '<p class="empty">No files are available.</p>';
+        setBanner(error.message || 'SD card directory could not be loaded.', 'warn');
+      }
+    }
+
+    async function loadStatus() {
+      try {
+        const data = await fetchJson('/api/sd/status', { cache: 'no-store' });
+        updateStatus(data);
+        if (!data.sdCardMounted) {
+          byId('fileList').innerHTML = '<p class="empty">Click Read Card to mount the SD card and browse files.</p>';
+          setBanner(data.message, 'info');
+        }
+      } catch (error) {
+        setBanner(error.message || 'SD card status could not be loaded.', 'warn');
+      }
+    }
+
+    async function readCard() {
+      byId('readCardButton').disabled = true;
+      setBanner('Reading SD card...', 'info');
+
+      try {
+        const data = await postForm('/api/sd/mount', {});
+        updateStatus(data);
+        setBanner(data.message, data.sdCardMounted ? 'ok' : 'warn');
+        await loadDirectory(currentPath);
+      } catch (error) {
+        if (error.data) {
+          updateStatus(error.data);
+        }
+        byId('fileList').innerHTML = '<p class="empty">No files are available.</p>';
+        setBanner(error.message || 'SD card read failed.', 'warn');
+      } finally {
+        byId('readCardButton').disabled = false;
+      }
+    }
+
+    async function ejectCard() {
+      byId('ejectCardButton').disabled = true;
+      setBanner('Ejecting SD card...', 'info');
+
+      try {
+        const data = await postForm('/api/sd/eject', {});
+        updateStatus(data);
+        currentPath = '/';
+        byId('pathInput').value = currentPath;
+        byId('fileList').innerHTML = '<p class="empty">SD card ejected. It is safe to remove the card.</p>';
+        setBanner(data.message, 'ok');
+      } catch (error) {
+        if (error.data) {
+          updateStatus(error.data);
+        } else {
+          byId('ejectCardButton').disabled = false;
+        }
+        setBanner(error.message || 'SD card eject failed.', 'warn');
+      }
+    }
+
+    byId('openPathButton').addEventListener('click', function () {
+      loadDirectory(byId('pathInput').value.trim() || '/');
+    });
+    byId('pathInput').addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') {
+        loadDirectory(byId('pathInput').value.trim() || '/');
+      }
+    });
+    byId('upButton').addEventListener('click', function () {
+      loadDirectory(parentPath(currentPath));
+    });
+    byId('readCardButton').addEventListener('click', readCard);
+    byId('ejectCardButton').addEventListener('click', ejectCard);
+
+    loadStatus();
+  </script>
+</body>
+</html>
+)HTML";
+  return sendChunkedResponse(req, "text/html; charset=utf-8", page);
+}
+
 esp_err_t handleStatusJson(httpd_req_t *req) {
   const String json = buildStatusJson();
   return sendChunkedResponse(req, "application/json", json.c_str());
+}
+
+esp_err_t handleSDCardStatus(httpd_req_t *req) {
+  const SDCardInfo info = getSDCardInfo();
+  return sendResponse(req, "application/json",
+                      buildSDCardStatusJson(
+                          info.enabled, info.mounted ? "SD card is mounted."
+                                                     : info.status));
+}
+
+esp_err_t handleSDCardMount(httpd_req_t *req) {
+  const bool mounted = refreshSDCardMount();
+  const SDCardInfo info = getSDCardInfo();
+  if (!mounted) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+  }
+
+  return sendResponse(
+      req, "application/json",
+      buildSDCardStatusJson(mounted, mounted ? "SD card mounted." : info.status));
+}
+
+esp_err_t handleSDCardEject(httpd_req_t *req) {
+  String message;
+  const bool ejected = ejectSDCard(&message);
+  if (!ejected) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+  }
+
+  return sendResponse(req, "application/json",
+                      buildSDCardStatusJson(ejected, message));
+}
+
+esp_err_t handleSDCardList(httpd_req_t *req) {
+  const String requestedPath = getQueryField(req, "path", "/");
+  String normalizedPath;
+  String message;
+  std::vector<SDCardEntry> entries;
+
+  if (!normalizeSDCardPath(requestedPath, &normalizedPath, &message)) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    return sendResponse(
+        req, "application/json",
+        buildSDCardDirectoryJson(false, "/", entries, message));
+  }
+
+  if (!listSDCardDirectory(normalizedPath, &entries, &message)) {
+    httpd_resp_set_status(req, isSDCardMounted() ? "404 Not Found"
+                                                 : "503 Service Unavailable");
+    return sendResponse(
+        req, "application/json",
+        buildSDCardDirectoryJson(false, normalizedPath, entries, message));
+  }
+
+  return sendChunkedResponse(
+      req, "application/json",
+      buildSDCardDirectoryJson(true, normalizedPath, entries, message).c_str());
+}
+
+esp_err_t handleSDCardDownload(httpd_req_t *req) {
+  const String requestedPath = getQueryField(req, "path", "");
+  String normalizedPath;
+  String message;
+
+  if (!normalizeSDCardPath(requestedPath, &normalizedPath, &message) ||
+      normalizedPath == "/") {
+    httpd_resp_set_status(req, "400 Bad Request");
+    return sendResponse(req, "application/json",
+                        buildBasicResultJson(false, "Choose a file to download."));
+  }
+
+  File file;
+  if (!openSDCardFile(normalizedPath, &file, &message)) {
+    httpd_resp_set_status(req, isSDCardMounted() ? "404 Not Found"
+                                                 : "503 Service Unavailable");
+    return sendResponse(req, "application/json",
+                        buildBasicResultJson(false, message));
+  }
+
+  const String contentType = getContentTypeForPath(normalizedPath);
+  String filename = normalizedPath.substring(normalizedPath.lastIndexOf('/') + 1);
+  filename.replace("\"", "'");
+  const String disposition = "attachment; filename=\"" + filename + "\"";
+
+  httpd_resp_set_type(req, contentType.c_str());
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store, max-age=0");
+  httpd_resp_set_hdr(req, "Content-Disposition", disposition.c_str());
+
+  char buffer[512];
+  while (file.available()) {
+    const size_t bytesRead = file.readBytes(buffer, sizeof(buffer));
+    if (bytesRead == 0) {
+      break;
+    }
+
+    const esp_err_t result = httpd_resp_send_chunk(req, buffer, bytesRead);
+    if (result != ESP_OK) {
+      file.close();
+      return result;
+    }
+  }
+
+  file.close();
+  return httpd_resp_send_chunk(req, nullptr, 0);
 }
 
 esp_err_t handleRegionalSettingsGet(httpd_req_t *req) {
@@ -2441,13 +3386,13 @@ esp_err_t handleIpModeUpdate(httpd_req_t *req) {
   } else if (useFixed && !isConfiguredFixedIpCertificateSupported()) {
     message =
         "Fixed IP mode saved. The board will reconnect to Wi-Fi. Use https://" +
-        String(AppConfig::kStatusHostName) +
-        ".local/ after reconnect because the direct-IP certificate no longer "
+        getStationMdnsHostName() +
+        "/ after reconnect because the direct-IP certificate no longer "
         "matches the custom fixed IP.";
   } else if (isStationConnected()) {
     message =
         "IP mode saved. The board will reconnect to Wi-Fi. Reopen via https://" +
-        String(AppConfig::kStatusHostName) + ".local/ if the IP changes.";
+        getStationMdnsHostName() + "/ if the IP changes.";
   } else {
     message =
         "IP mode saved. It will apply on the next station Wi-Fi reconnect.";
@@ -2508,8 +3453,8 @@ esp_err_t handleNetworkConnect(httpd_req_t *req) {
       "Hotspot saved. The board will reconnect using \"" + ssid + "\".";
   if (isStaticStationIpEnabled() && !isConfiguredFixedIpCertificateSupported()) {
     message +=
-        " Use https://" + String(AppConfig::kStatusHostName) +
-        ".local/ after reconnect because the direct-IP certificate does not "
+        " Use https://" + getStationMdnsHostName() +
+        "/ after reconnect because the direct-IP certificate does not "
         "match the custom fixed IP.";
   }
 
@@ -2563,7 +3508,7 @@ esp_err_t handleIpConfigUpdate(httpd_req_t *req) {
     message +=
         " Direct-IP HTTPS will show a certificate warning on the custom IP, "
         "so use https://" +
-        String(AppConfig::kStatusHostName) + ".local/ after reconnect.";
+        getStationMdnsHostName() + "/ after reconnect.";
   }
 
   return sendResponse(req, "application/json",
@@ -2669,8 +3614,7 @@ String buildDirectHttpsUrl(const String &path) {
 
 String buildHttpsUrl(const String &path) {
   if (isStationConnected() && mdnsStarted) {
-    return buildHttpsUrlForHost(String(AppConfig::kStatusHostName) + ".local",
-                                path);
+    return buildHttpsUrlForHost(getStationMdnsHostName(), path);
   }
 
   return buildDirectHttpsUrl(path);
@@ -2766,8 +3710,10 @@ void handleHttpLanding() {
   const bool httpsAvailable = serverHandle != nullptr;
   const String preferredHttpsUrl = buildHttpsUrl("/");
   const String preferredSetupUrl = buildHttpsUrl("/setup");
+  const String preferredSDCardUrl = buildHttpsUrl("/sd");
   const String directHttpsUrl = buildDirectHttpsUrl("/");
   const String httpStatusUrl = buildDirectHttpUrl("/api/status");
+  const String mdnsHostName = getStationMdnsHostName();
   const String connectionSummary =
       getConnectionStatusText() + " • " + getIpAssignmentMode() + " • " +
       getIpAddress();
@@ -2783,15 +3729,17 @@ void handleHttpLanding() {
   } else if (isStationConnected() && !isConfiguredFixedIpCertificateSupported()) {
     certNotes =
         "A custom fixed IP is configured. The self-signed certificate still "
-        "matches esp32-status.local, not the custom direct IP address.";
+        "matches the build-time host, not the custom direct IP address.";
   } else if (isStationConnected() && isCurrentDirectIpCertificateSupported()) {
     certNotes =
         "The current direct IP also matches the self-signed certificate, "
-        "although esp32-status.local is still the easier long-term URL.";
+        "although " +
+        mdnsHostName + " is still the easier long-term URL.";
   } else {
     certNotes =
-        "The self-signed certificate is issued for esp32-status.local, so that "
-        "hostname is the safest choice for HTTPS access.";
+        "This board advertises " + mdnsHostName +
+        ". The self-signed certificate may still need to be trusted on your "
+        "device before HTTPS opens cleanly.";
   }
 
   String directIpDetails =
@@ -2820,6 +3768,8 @@ void handleHttpLanding() {
         "\">Open Status Page</a>"
         "<a class=\"button secondary\" href=\"" +
         htmlEscape(preferredSetupUrl) + "\">Open Setup Page</a>"
+        "<a class=\"button secondary\" href=\"" +
+        htmlEscape(preferredSDCardUrl) + "\">Open SD Card Page</a>"
         "<a class=\"button secondary\" href=\"/cert.pem\">Download Certificate</a>";
   } else {
     httpsIntro =
@@ -2923,7 +3873,7 @@ void handleHttpLanding() {
     __HTTPS_STATUS_BLOCK__
     <p>__CERT_NOTES__</p>
     __DIRECT_IP_DETAILS__
-    <p>The status page shows live board and API details, while the setup page handles Wi-Fi, IP, regional, and Bluetooth controls.</p>
+    <p>The status page shows live board and API details, while the setup page handles Wi-Fi, IP, regional, and Bluetooth controls. The SD card page is available when HTTPS is running.</p>
     <p>If your browser rejects the TLS handshake, download the certificate, trust it on your device, then open the HTTPS URL again.</p>
     <div class="actions">
       __ACTION_MARKUP__
@@ -2969,7 +3919,8 @@ void maybeStartMdns() {
     return;
   }
 
-  if (!MDNS.begin(AppConfig::kStatusHostName)) {
+  const String hostName = getStationHostName();
+  if (!MDNS.begin(hostName.c_str())) {
     Serial.println("mDNS setup failed.");
     return;
   }
@@ -2977,7 +3928,7 @@ void maybeStartMdns() {
   MDNS.addService("https", "tcp", AppConfig::kStatusServerPort);
   mdnsStarted = true;
   Serial.printf("mDNS hostname available at https://%s.local/\n",
-                AppConfig::kStatusHostName);
+                hostName.c_str());
 }
 
 void printAccessUrls() {
@@ -2991,7 +3942,7 @@ void printAccessUrls() {
   if (isStationConnected()) {
     if (mdnsStarted) {
       Serial.printf("Preferred local URL: https://%s.local/\n",
-                    AppConfig::kStatusHostName);
+                    getStationHostName().c_str());
     }
 
     if (isCurrentDirectIpCertificateSupported()) {
@@ -3002,11 +3953,12 @@ void printAccessUrls() {
           "Custom fixed IP %s is saved. Use https://%s.local/ because the "
           "self-signed certificate still matches the build-time fixed IP %s.\n",
           getConfiguredStationIpConfig().address.toString().c_str(),
-          AppConfig::kStatusHostName,
+          getStationHostName().c_str(),
           AppConfig::kStationStaticIp.toString().c_str());
     } else if (mdnsStarted) {
-      Serial.println(
-          "Direct-IP HTTPS may show a hostname warning. Prefer esp32-status.local.");
+      Serial.printf(
+          "Direct-IP HTTPS may show a hostname warning. Prefer %s.\n",
+          getStationMdnsHostName().c_str());
     }
   } else if (isAccessPointActive()) {
     Serial.println("Fallback AP certificate is valid for https://192.168.4.1/.");
@@ -3055,12 +4007,18 @@ void ensureHttpBootstrapServer() {
 
   redirectServer.on("/", handleHttpLanding);
   redirectServer.on("/setup", handleHttpRedirect);
+  redirectServer.on("/sd", handleHttpRedirect);
   redirectServer.on("/secure", handleHttpRedirect);
   redirectServer.on("/cert.pem", handleCertDownload);
   redirectServer.on("/api/status", handleHttpStatusJson);
   redirectServer.on("/api/regional/settings", handleHttpApiUnavailable);
   redirectServer.on("/api/network/scan", handleHttpApiUnavailable);
   redirectServer.on("/api/bluetooth/scan", handleHttpApiUnavailable);
+  redirectServer.on("/api/sd/status", handleHttpApiUnavailable);
+  redirectServer.on("/api/sd/list", handleHttpApiUnavailable);
+  redirectServer.on("/api/sd/download", handleHttpApiUnavailable);
+  redirectServer.on("/api/sd/mount", handleHttpApiUnavailable);
+  redirectServer.on("/api/sd/eject", handleHttpApiUnavailable);
   redirectServer.on("/healthz", handleHttpHealthCheck);
   redirectServer.onNotFound(handleHttpLanding);
   redirectServer.begin();
@@ -3084,7 +4042,7 @@ bool ensureHttpsServerStarted() {
   config.port_secure = AppConfig::kStatusServerPort;
   config.httpd.stack_size = 16384;
   config.httpd.max_open_sockets = 2;
-  config.httpd.max_uri_handlers = 18;
+  config.httpd.max_uri_handlers = 24;
   config.httpd.max_resp_headers = 12;
   config.cacert_pem = certs_status_server_cert_pem;
   config.cacert_len = certs_status_server_cert_pem_len;
@@ -3107,8 +4065,15 @@ bool ensureHttpsServerStarted() {
 
   const bool dashboardRegistered = registerGetHandler("/", handleDashboard);
   const bool setupPageRegistered = registerGetHandler("/setup", handleSetupPage);
+  const bool sdCardPageRegistered = registerGetHandler("/sd", handleSDCardPage);
   const bool statusRegistered =
       registerGetHandler("/api/status", handleStatusJson);
+  const bool sdCardStatusRegistered =
+      registerGetHandler("/api/sd/status", handleSDCardStatus);
+  const bool sdCardListRegistered =
+      registerGetHandler("/api/sd/list", handleSDCardList);
+  const bool sdCardDownloadRegistered =
+      registerGetHandler("/api/sd/download", handleSDCardDownload);
   const bool regionalSettingsRegistered =
       registerGetHandler("/api/regional/settings", handleRegionalSettingsGet);
   const bool networkScanRegistered =
@@ -3127,16 +4092,23 @@ bool ensureHttpsServerStarted() {
       registerPostHandler("/api/network/ip-config", handleIpConfigUpdate);
   const bool regionalUpdateRegistered = registerPostHandler(
       "/api/regional/settings", handleRegionalSettingsUpdate);
+  const bool sdCardMountRegistered =
+      registerPostHandler("/api/sd/mount", handleSDCardMount);
+  const bool sdCardEjectRegistered =
+      registerPostHandler("/api/sd/eject", handleSDCardEject);
   const bool bluetoothConnectRegistered =
       registerPostHandler("/api/bluetooth/connect", handleBluetoothConnect);
   const bool bluetoothDisconnectRegistered = registerPostHandler(
       "/api/bluetooth/disconnect", handleBluetoothDisconnect);
 
-  if (!dashboardRegistered || !setupPageRegistered || !statusRegistered ||
+  if (!dashboardRegistered || !setupPageRegistered || !sdCardPageRegistered ||
+      !statusRegistered || !sdCardStatusRegistered ||
+      !sdCardListRegistered || !sdCardDownloadRegistered ||
       !regionalSettingsRegistered || !networkScanRegistered ||
       !bluetoothScanRegistered || !bluetoothScanStartRegistered ||
       !healthRegistered || !ipModeRegistered || !wifiConnectRegistered ||
       !ipConfigRegistered || !regionalUpdateRegistered ||
+      !sdCardMountRegistered || !sdCardEjectRegistered ||
       !bluetoothConnectRegistered || !bluetoothDisconnectRegistered) {
     Serial.println("HTTPS setup server started, but not all routes registered.");
     httpsStartupMessage =

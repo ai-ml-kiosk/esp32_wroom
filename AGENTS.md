@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This is an ESP32 Arduino firmware project built with PlatformIO for the `esp32dev` board. The firmware provides Wi-Fi setup and fallback AP recovery, HTTPS status/setup pages, JSON/form APIs, an optional SSD1306 OLED status display, optional ADC1 power sensing, heartbeat LED behavior, regional time/date settings, and on-demand BLE support through NimBLE.
+This is an ESP32 Arduino firmware project built with PlatformIO for the `esp32dev` board. The firmware provides Wi-Fi setup and fallback AP recovery, HTTPS status/setup pages, JSON/form APIs, an optional SSD1306 OLED status display, manual SPI SD card browsing/eject, optional ADC1 power sensing, heartbeat LED behavior, regional time/date settings, and on-demand BLE support through NimBLE.
 
 Use `README.md` for operator-facing setup notes and `memory-bank/` for durable project context.
 
@@ -21,6 +21,7 @@ Then read the subsystem pair that owns the requested behavior:
 - Wi-Fi, fallback AP, static IP, saved credentials: `include/Connectivity.h`, `src/Connectivity.cpp`
 - HTTPS/HTTP dashboard, setup page, APIs: `include/StatusServer.h`, `src/StatusServer.cpp`
 - OLED display: `include/StatusDisplay.h`, `src/StatusDisplay.cpp`
+- SD card detection and file access: `include/ManageSDCard.h`, `src/ManageSDCard.cpp`
 - BLE scanning/connection: `include/BluetoothManager.h`, `src/BluetoothManager.cpp`
 - Regional timezone/date formatting: `include/RegionalSettings.h`, `src/RegionalSettings.cpp`
 - Power sensing: `include/PowerMonitor.h`, `src/PowerMonitor.cpp`
@@ -71,7 +72,8 @@ For code changes, prefer this order when practical:
 4. If Wi-Fi changed, reason through fallback AP recovery.
 5. If BLE changed, preserve the on-demand/release pattern so HTTPS stays responsive.
 6. If display changed, check the SSD1306 I2C assumptions and 16-column U8x8 layout.
-7. If behavior changed meaningfully, update the relevant `memory-bank/` file.
+7. If SD card behavior changed, check SPI pin defaults, manual mount behavior, safe eject/unmount behavior, remount after eject, and `/api/sd/*` route registration.
+8. If behavior changed meaningfully, update the relevant `memory-bank/` file.
 
 ## Hardware Assumptions
 
@@ -81,6 +83,7 @@ For code changes, prefer this order when practical:
 - OLED: optional SSD1306 128x64 I2C display
 - OLED pins: SDA `GPIO21`, SCL `GPIO22`
 - OLED addresses scanned: `0x3C`, `0x3D`
+- SD card reader: optional SPI microSD reader, default pins CS `GPIO5`, SCK `GPIO18`, MISO `GPIO19`, MOSI `GPIO23`
 - Heartbeat LED: `LED_BUILTIN` if available, otherwise GPIO `2`
 - Optional power sensing must use an ADC1-capable pin such as GPIO `32`, `33`, `34`, `35`, `36`, or `39`
 
@@ -88,8 +91,10 @@ For code changes, prefer this order when practical:
 
 - HTTPS dashboard: `/`
 - HTTPS setup page: `/setup`
+- SD card management page: `/sd`
 - Status API: `/api/status`
+- SD card APIs: `/api/sd/status`, `/api/sd/list?path=/`, `/api/sd/download?path=/file`, `POST /api/sd/mount`, `POST /api/sd/eject`
 - Health check: `/healthz`
 - HTTP bootstrap/recovery page: port `80`
-- Preferred station URL when mDNS is available: `https://esp32-status.local/`
+- Preferred station URL when mDNS is available: `https://esp32-status-<last-6-mac>.local/` by default
 - Fallback AP direct URL: `https://192.168.4.1/`

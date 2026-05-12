@@ -19,6 +19,14 @@
 #define APP_FALLBACK_AP_PASSWORD "change-me-ap"
 #endif
 
+#ifndef APP_STATUS_HOST_NAME
+#define APP_STATUS_HOST_NAME "esp32-status"
+#endif
+
+#ifndef APP_STATUS_HOST_NAME_APPEND_MAC
+#define APP_STATUS_HOST_NAME_APPEND_MAC true
+#endif
+
 #ifndef APP_POWER_SENSE_PIN
 #define APP_POWER_SENSE_PIN -1
 #endif
@@ -31,13 +39,38 @@
 #define APP_POWER_SENSE_OFFSET_MV 0
 #endif
 
+#ifndef APP_SD_CARD_ENABLED
+#define APP_SD_CARD_ENABLED true
+#endif
+
+#ifndef APP_SD_CARD_CS_PIN
+#define APP_SD_CARD_CS_PIN 5
+#endif
+
+#ifndef APP_SD_CARD_SCK_PIN
+#define APP_SD_CARD_SCK_PIN 18
+#endif
+
+#ifndef APP_SD_CARD_MISO_PIN
+#define APP_SD_CARD_MISO_PIN 19
+#endif
+
+#ifndef APP_SD_CARD_MOSI_PIN
+#define APP_SD_CARD_MOSI_PIN 23
+#endif
+
+#ifndef APP_SD_CARD_SPI_FREQUENCY_HZ
+#define APP_SD_CARD_SPI_FREQUENCY_HZ 4000000
+#endif
+
 namespace AppConfig {
 
 constexpr char kWiFiSsid[] = APP_WIFI_SSID;
 constexpr char kWiFiPassword[] = APP_WIFI_PASSWORD;
 constexpr char kFallbackApSsidPrefix[] = APP_FALLBACK_AP_SSID_PREFIX;
 constexpr char kFallbackApPassword[] = APP_FALLBACK_AP_PASSWORD;
-constexpr char kStatusHostName[] = "esp32-status";
+constexpr char kStatusHostName[] = APP_STATUS_HOST_NAME;
+constexpr bool kAppendMacToStatusHostName = APP_STATUS_HOST_NAME_APPEND_MAC;
 constexpr char kDefaultTimeZoneId[] = "australia_sydney";
 constexpr char kTimeZone[] = "AEST-10AEDT,M10.1.0/2,M4.1.0/3";
 constexpr char kDefaultDateFormatId[] = "dd.mm.yyyy";
@@ -70,6 +103,14 @@ constexpr int32_t kPowerSenseOffsetMilliVolts = APP_POWER_SENSE_OFFSET_MV;
 constexpr unsigned long kPowerSampleIntervalMs = 2000;
 constexpr uint8_t kPowerSampleCount = 8;
 constexpr uint32_t kPowerStableWindowMilliVolts = 120;
+constexpr bool kSDCardEnabled = APP_SD_CARD_ENABLED;
+constexpr uint8_t kSDCardCsPin = APP_SD_CARD_CS_PIN;
+constexpr uint8_t kSDCardSckPin = APP_SD_CARD_SCK_PIN;
+constexpr uint8_t kSDCardMisoPin = APP_SD_CARD_MISO_PIN;
+constexpr uint8_t kSDCardMosiPin = APP_SD_CARD_MOSI_PIN;
+constexpr uint32_t kSDCardSpiFrequencyHz = APP_SD_CARD_SPI_FREQUENCY_HZ;
+constexpr unsigned long kSDCardDetectIntervalMs = 5000;
+constexpr size_t kSDCardMaxDirectoryEntries = 80;
 
 #ifndef LED_BUILTIN
 constexpr uint8_t kHeartbeatLedPin = 2;
@@ -83,5 +124,7 @@ static_assert(kPowerSenseDividerRatio > 0.0f,
               "Power sense divider ratio must be greater than zero.");
 static_assert(kPowerSampleCount > 0,
               "Power sample count must be greater than zero.");
+static_assert(kSDCardSpiFrequencyHz > 0,
+              "SD card SPI frequency must be greater than zero.");
 
 }  // namespace AppConfig

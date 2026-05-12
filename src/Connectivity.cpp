@@ -2,6 +2,7 @@
 #include <Preferences.h>
 #include <WiFi.h>
 
+#include <cstring>
 #include <vector>
 
 #include "AppConfig.h"
@@ -23,6 +24,7 @@ bool ipAssignmentChangePending = false;
 bool wifiReconnectPending = false;
 String configuredStationSsid = AppConfig::kWiFiSsid;
 String configuredStationPassword = AppConfig::kWiFiPassword;
+String stationHostName;
 StationIpConfig configuredStationIpConfig = {
     AppConfig::kStationStaticIp,
     AppConfig::kStationGateway,
@@ -46,6 +48,40 @@ constexpr char kPrimaryDnsPreferenceKey[] = "sta-dns1";
 constexpr char kSecondaryDnsPreferenceKey[] = "sta-dns2";
 constexpr char kPlaceholderWiFiSsid[] = "change-me-ssid";
 constexpr char kPlaceholderWiFiPassword[] = "change-me-password";
+constexpr size_t kMaxStationHostNameLength = 31;
+
+String buildStationHostName() {
+  String hostName = AppConfig::kStatusHostName;
+  hostName.trim();
+  hostName.toLowerCase();
+
+  if (hostName.length() == 0) {
+    hostName = "esp32-status";
+  }
+
+  if (!AppConfig::kAppendMacToStatusHostName) {
+    return hostName.substring(0, kMaxStationHostNameLength);
+  }
+
+  const uint64_t chipId = ESP.getEfuseMac();
+  char suffix[7];
+  snprintf(suffix, sizeof(suffix), "%06llx",
+           static_cast<unsigned long long>(chipId & 0xFFFFFFULL));
+
+  const size_t separatorAndSuffixLength = 1 + strlen(suffix);
+  if (hostName.length() + separatorAndSuffixLength >
+      kMaxStationHostNameLength) {
+    hostName = hostName.substring(
+        0, kMaxStationHostNameLength - separatorAndSuffixLength);
+    while (hostName.endsWith("-")) {
+      hostName.remove(hostName.length() - 1);
+    }
+  }
+
+  hostName += "-";
+  hostName += suffix;
+  return hostName;
+}
 
 String buildFallbackApSsid() {
   const uint64_t chipId = ESP.getEfuseMac();
@@ -260,6 +296,7 @@ void ensurePreferencesReady() {
   }
   Serial.printf("Station IP mode preference loaded: %s.\n",
                 staticStationIpEnabled ? "fixed" : "dynamic");
+  Serial.printf("Station hostname: %s.local\n", getStationHostName().c_str());
 }
 
 void handleWiFiEvent(const WiFiEvent_t event, const WiFiEventInfo_t info) {
@@ -368,7 +405,8 @@ void beginStationConnectionAttempt(const bool logAttempt) {
   WiFi.setAutoReconnect(true);
   // ESP32 Wi-Fi/BLE coexistence requires modem sleep to stay enabled.
   WiFi.setSleep(true);
-  WiFi.setHostname(AppConfig::kStatusHostName);
+  const String hostName = getStationHostName();
+  WiFi.setHostname(hostName.c_str());
   WiFi.disconnect(false, false);
   delay(100);
   configureStationNetwork();
@@ -534,6 +572,14 @@ String getAccessPointName() {
 }
 
 String getConfiguredStationSsid() { return configuredStationSsid; }
+
+String getStationHostName() {
+  if (stationHostName.length() == 0) {
+    stationHostName = buildStationHostName();
+  }
+
+  return stationHostName;
+}
 
 bool isStaticStationIpEnabled() { return staticStationIpEnabled; }
 

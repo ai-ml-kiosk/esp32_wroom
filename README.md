@@ -13,6 +13,7 @@ Professional ESP32 starter project using the Arduino framework and a modular C++
 - JSON status endpoint on `/api/status`
 - Self-signed TLS certificate for local development
 - HTTP port 80 bootstrap page for HTTPS onboarding
+- Manual SPI SD card reading with a browser file explorer, download API, and safe eject
 - Fixed station IP support for the normal Wi-Fi network
 - Fallback access point if Wi-Fi connection fails
 - Separated application, connectivity, and heartbeat modules
@@ -25,6 +26,7 @@ Professional ESP32 starter project using the Arduino framework and a modular C++
 - `include/Heartbeat.h`: heartbeat LED interface
 - `include/StatusDisplay.h`: local OLED status display interface
 - `include/StatusServer.h`: HTTP dashboard interface
+- `include/ManageSDCard.h`: SPI SD card detection and file access interface
 - `include/generated/*.h`: locally generated embedded certificate/key headers
 - `include/Application.h`: setup and loop orchestration
 - `certs/`: local self-signed certificate and key
@@ -61,6 +63,26 @@ Notes:
 - The code scans the common OLED I2C addresses `0x3C` and `0x3D`.
 - If the screen stays blank, the module may use a different controller such as `SH1106`; this implementation currently defaults to `SSD1306`.
 
+## SD Card Wiring
+
+This firmware assumes a common SPI microSD card reader on the ESP32 VSPI pins by default. The firmware does not touch the SD card at boot; open `/sd` and choose `Read Card` when you want to mount and browse it. Choose `Eject Card` before removing the card; eject unmounts the SD filesystem, releases the SPI bus, and leaves the page ready for a later `Read Card` remount.
+
+- Reader `GND` -> ESP32 `GND`
+- Reader `VCC` -> ESP32 `3V3`
+- Reader `CS` -> ESP32 `GPIO5`
+- Reader `SCK` -> ESP32 `GPIO18`
+- Reader `MISO` -> ESP32 `GPIO19`
+- Reader `MOSI` -> ESP32 `GPIO23`
+
+The pins can be overridden in `.env.local` using:
+
+- `ESP32_SD_CARD_CS_PIN`
+- `ESP32_SD_CARD_SCK_PIN`
+- `ESP32_SD_CARD_MISO_PIN`
+- `ESP32_SD_CARD_MOSI_PIN`
+- `ESP32_SD_CARD_SPI_FREQUENCY_HZ`
+- `ESP32_SD_CARD_ENABLED=false` to disable SD card management
+
 ## Wi-Fi Fallback
 
 If the ESP32 cannot join your normal Wi-Fi at boot, it now:
@@ -89,7 +111,13 @@ Choose a fixed IP that is free on your LAN or reserved for the ESP32 in your rou
 ## HTTPS Dashboard
 
 - `/`: live board status dashboard over HTTPS
+- `/sd`: SD card management page and file explorer
 - `/api/status`: machine-readable JSON status
+- `/api/sd/status`: SD card status JSON
+- `/api/sd/list?path=/`: SD card directory listing JSON
+- `/api/sd/download?path=/file.txt`: SD card file download
+- `/api/sd/mount`: SD card read/mount endpoint, using `POST`
+- `/api/sd/eject`: SD card safe-eject endpoint, using `POST`
 - `/healthz`: simple text health check
 
 ## Browser UI Preview
@@ -110,12 +138,12 @@ Configuration page served over HTTPS on `/setup` for Wi-Fi, IP mode, regional se
 
 The firmware serves on port `443` with a project-local self-signed certificate. Browsers will warn until you trust `certs/status-server-cert.pem`.
 
-When the ESP32 joins your normal Wi-Fi network, the preferred URL is `https://esp32-status.local/`.
+When the ESP32 joins your normal Wi-Fi network, the preferred URL is board-specific by default, such as `https://esp32-status-577180.local/`. The suffix comes from the last 6 hex digits of the ESP32 MAC address so multiple boards can share one Wi-Fi network without fighting over the same hostname. Override `ESP32_STATUS_HOST_NAME` or set `ESP32_STATUS_HOST_NAME_APPEND_MAC=false` in `.env.local` if you need a fixed name.
 
 If the board cannot join the configured Wi-Fi network, it automatically starts a fallback access point using the `kFallbackApSsidPrefix` and `kFallbackApPassword` values in `include/AppConfig.h`. In that mode, use `https://192.168.4.1/`.
 
 If you open `http://` or only the bare IP address, port `80` now serves a bootstrap page. It links to both HTTPS pages, shows the preferred hostname and direct fixed-IP option when available, and lets you download the certificate at `/cert.pem`.
 
-In fixed-IP station mode, the certificate matches both `esp32-status.local` and the configured fixed IP address. In dynamic-IP station mode, use `esp32-status.local` because the certificate does not follow a DHCP-assigned IP.
+In fixed-IP station mode, choose a unique address for each board. In dynamic-IP station mode, use the board-specific `.local` name or the HTTP bootstrap page to find the current DHCP address.
 
 The private key is stored in `certs/status-server-key.pem` for development convenience. The local `.env` files, generated certificate PEM files, and generated key headers are now git-ignored so they do not get added to a future GitHub repo by default.

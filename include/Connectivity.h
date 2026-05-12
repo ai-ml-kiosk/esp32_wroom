@@ -30,6 +30,7 @@ String getNetworkModeName();
 String getNetworkName();
 String getAccessPointName();
 String getConfiguredStationSsid();
+String getStationHostName();
 bool isStaticStationIpEnabled();
 bool isIpAssignmentChangePending();
 bool isWiFiReconnectPending();
